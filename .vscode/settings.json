@@ -1,0 +1,16 @@
+{
+  "sqltools.connections": [
+    {
+      "ssh": "Disabled",
+      "previewLimit": 50,
+      "server": "localhost",
+      "port": 5432,
+      "driver": "PostgreSQL",
+      "name": "military_planner",
+      "group": "localhost",
+      "database": "military_planner",
+      "username": "postgres",
+      "password": "noureen5"
+    }
+  ]
+}
