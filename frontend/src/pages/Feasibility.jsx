@@ -128,6 +128,7 @@ export default function Feasibility() {
           <ConflictTable
   conflicts={result.conflicts}
   schedule={result.schedule}
+  resolutions={result.resolutions}  // ← add this
 />
 {!result.feasible && (
   <ResolutionTable resolutions={result.resolutions} />
