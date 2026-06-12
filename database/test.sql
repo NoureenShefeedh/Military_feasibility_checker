@@ -1,1 +1,1 @@
-select * from locations
+select * from vehicles;

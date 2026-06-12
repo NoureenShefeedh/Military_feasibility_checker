@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchPlans, checkFeasibility } from "../api/plans";
 import ConflictTable from "../components/ConflictTable";
-import ResolutionTable from "../components/ResolutionTable";
+
 export default function Feasibility() {
   const [plans, setPlans] = useState([]);
   const [selectedPlan, setSelectedPlan] = useState("");
@@ -23,7 +23,7 @@ export default function Feasibility() {
   };
 
   return (
-    <div style={{ padding: "40px", maxWidth: "900px", margin: "0 auto" }}>
+    <div style={{ padding: "40px", maxWidth: "1000px", margin: "0 auto" }}>
       <h2 style={{ fontSize: "22px", color: "#1a1a2e", marginBottom: "8px" }}>
         Feasibility Check
       </h2>
@@ -124,15 +124,10 @@ export default function Feasibility() {
             </span>
           </div>
 
-          
           <ConflictTable
-  conflicts={result.conflicts}
-  schedule={result.schedule}
-  resolutions={result.resolutions}  // ← add this
-/>
-{!result.feasible && (
-  <ResolutionTable resolutions={result.resolutions} />
-)}
+            conflicts={result.conflicts}
+            resolutions={result.resolutions}
+          />
         </>
       )}
     </div>
