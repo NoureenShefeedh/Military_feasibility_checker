@@ -23,7 +23,7 @@ export default function ConflictTable({ conflicts, resolutions }) {
           <table style={tableStyle}>
             <thead>
               <tr style={{ background: "#f7f7f7" }}>
-                {["Trip", "Type", "Original", "Replacement"].map(h => (
+                {["Trip", "Type", "Original", "Replacement", "Type Match"].map(h => (
                   <th key={h} style={thStyle}>{h}</th>
                 ))}
               </tr>
@@ -46,9 +46,30 @@ export default function ConflictTable({ conflicts, resolutions }) {
                   </td>
                   <td style={{ ...tdStyle, fontWeight: 600, color: "#2e7d52" }}>
                     {r.conflict_type === "Vehicle"
-                      ? <>{r.replacement} <span style={{ color: "#888", fontWeight: 400, fontSize: "12px" }}>{r.replacement_name}</span></>
-                      : <>{r.replacement_name} {r.crew_type && <span style={{ color: "#888", fontWeight: 400, fontSize: "12px" }}>({r.crew_type})</span>}</>
+                      ? <>
+                          {Array.isArray(r.replacement)
+                            ? r.replacement.join(", ")
+                            : r.replacement
+                          }
+                          <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
+                            {Array.isArray(r.replacement_name)
+                              ? r.replacement_name.join(", ")
+                              : r.replacement_name
+                            }
+                          </span>
+                        </>
+                      : <>
+                          {r.replacement_name}
+                          {r.crew_type && (
+                            <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
+                              ({r.crew_type})
+                            </span>
+                          )}
+                        </>
                     }
+                  </td>
+                  <td style={tdStyle}>
+                    <TypeMatchBadge resolution={r} />
                   </td>
                 </tr>
               ))}
@@ -100,6 +121,29 @@ export default function ConflictTable({ conflicts, resolutions }) {
 
     </div>
   );
+}
+
+function TypeMatchBadge({ resolution }) {
+  const { resolution_type, split, conflict_type } = resolution;
+
+  // Individuals always same type (strict crew type matching)
+  if (conflict_type === "Individual") {
+    return <Badge text="Same Type" color="#2e7d52" />;
+  }
+
+  if (resolution_type === "same_type") {
+    return <Badge text="Same Type" color="#2e7d52" />;
+  }
+
+  if (resolution_type === "cross_type" && split) {
+    return <Badge text="Split Load ⚠" color="#8e44ad" />;
+  }
+
+  if (resolution_type === "cross_type") {
+    return <Badge text="Cross Type ⚠" color="#e67e22" />;
+  }
+
+  return <Badge text="—" color="#888" />;
 }
 
 function Section({ title, data }) {
@@ -176,10 +220,18 @@ function Details({ conflict }) {
     );
   }
   if (conflict_subtype === "fuel") {
-    return <span style={{ color: "#8e44ad", fontSize: "12px", fontWeight: 500 }}>Vehicle cannot be fuelled in time</span>;
+    return (
+      <span style={{ color: "#8e44ad", fontSize: "12px", fontWeight: 500 }}>
+        Vehicle cannot be fuelled in time
+      </span>
+    );
   }
   if (conflict_subtype === "fuel_stop_late") {
-    return <span style={{ color: "#e67e22", fontSize: "12px", fontWeight: 500 }}>Fuel stop required but causes late arrival</span>;
+    return (
+      <span style={{ color: "#e67e22", fontSize: "12px", fontWeight: 500 }}>
+        Fuel stop required but causes late arrival
+      </span>
+    );
   }
   return <span>—</span>;
 }

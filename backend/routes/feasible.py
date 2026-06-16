@@ -184,7 +184,6 @@ def fuel_needed(distance_km, consumption_rate):
 
 
 def overlaps_availability(start_dt, end_dt, avail_windows):
-    """Returns (conflict: bool, matching window or None)."""
     for not_from, not_to, reason in avail_windows:
         nf = not_from.replace(tzinfo=None) if not_from.tzinfo is not None else not_from
         nt = not_to.replace(tzinfo=None)   if not_to.tzinfo   is not None else not_to
@@ -257,6 +256,22 @@ def make_unreachable_conflict(trip_id, identifier, conflict_type, reason, earlie
     }
 
 
+def make_cascade_conflict(trip_id, identifier, conflict_type, blocking_trip_id, actual_start, actual_end):
+    return {
+        "trip_id":            trip_id,
+        "identifier":         identifier,
+        "conflict_type":      conflict_type,
+        "conflict_subtype":   "cascade",
+        "reason":             f"Cannot proceed — depends on Trip {blocking_trip_id} which has a conflict",
+        "not_available_from": None,
+        "not_available_to":   None,
+        "earliest_available": None,
+        "blocking_trip_id":   blocking_trip_id,
+        "actual_start":       actual_start.isoformat() if hasattr(actual_start, 'isoformat') else str(actual_start),
+        "actual_end":         actual_end.isoformat()   if hasattr(actual_end,   'isoformat') else str(actual_end),
+    }
+
+
 # ─────────────────────────────────────────────
 # FUEL CHECK
 # ─────────────────────────────────────────────
@@ -272,11 +287,9 @@ def check_vehicle_fuel(
     dist_to_start = fetch_distance(current_loc, start_loc) or 0.0
     fuel_to_start = fuel_needed(dist_to_start, consumption_rate)
 
-    # ── Case 1: enough fuel to reach start_loc ──
     if current_fuel >= fuel_to_start:
         return None
 
-    # ── Case 2: fuel station at current location ──
     if fetch_location_has_fuel(current_loc):
         if fuel_capacity < fuel_to_start:
             return make_fuel_conflict(
@@ -284,11 +297,9 @@ def check_vehicle_fuel(
                 "Tank capacity insufficient — even when full cannot reach start location",
                 actual_start, actual_end
             )
-
         travel_to_start_secs = travel_time_secs(dist_to_start, vehicle_speed)
         total_time_needed    = fill_time_secs + travel_to_start_secs
         detour_start         = base_t0 - timedelta(seconds=total_time_needed)
-
         conflict, _ = overlaps_availability(detour_start, base_t0, avail_windows)
         if conflict:
             return make_fuel_stop_late_conflict(
@@ -296,38 +307,29 @@ def check_vehicle_fuel(
                 "Insufficient fuel — refuel at current location but unavailable during travel window to start location",
                 actual_start, actual_end
             )
-
         return None
 
-    # ── Case 3: no fuel station at current location ──
     fuel_stations     = fetch_fuel_stations()
     best_station      = None
     best_total_travel = float("inf")
 
     for station in fuel_stations:
         sid = station["location_id"]
-
         if sid == current_loc:
             continue
-
         dist_to_station    = fetch_distance(current_loc, sid)
         dist_station_start = fetch_distance(sid, start_loc)
-
         if dist_to_station is None or dist_station_start is None:
             continue
-
         if current_fuel < fuel_needed(dist_to_station, consumption_rate):
             continue
-
         if fuel_capacity < fuel_needed(dist_station_start, consumption_rate):
             continue
-
         total_travel = (
             travel_time_secs(dist_to_station,    vehicle_speed) +
             fill_time_secs +
             travel_time_secs(dist_station_start, vehicle_speed)
         )
-
         if total_travel < best_total_travel:
             best_total_travel = total_travel
             best_station      = station
@@ -340,7 +342,6 @@ def check_vehicle_fuel(
         )
 
     detour_start = base_t0 - timedelta(seconds=best_total_travel)
-
     conflict, _ = overlaps_availability(detour_start, base_t0, avail_windows)
     if conflict:
         return make_fuel_stop_late_conflict(
@@ -360,21 +361,13 @@ def check_resource(identifier, conflict_type, current_loc, trip_start_loc,
                    speed, actual_start, actual_end, avail_windows, base_t0,
                    end_loc=None, current_fuel=None,
                    fuel_capacity=None, consumption_rate=None):
-    """
-    Check order:
-    1. Availability: base_t0 → actual_end
-    2. Fuel check (vehicles only)
-    3. Reachability: must depart base_t0 - travel_secs, free during travel window
-    """
 
-    # ── 1. Availability ──
-    conflict, window = overlaps_availability(base_t0, actual_end, avail_windows)
+    conflict, window = overlaps_availability(actual_start, actual_end, avail_windows)
     if conflict:
         return make_unavailable_conflict(
             None, identifier, conflict_type, window, actual_start, actual_end
         )
 
-    # ── 2. Fuel check (vehicles only) ──
     if conflict_type == "Vehicle" and current_fuel is not None:
         fuel_conflict = check_vehicle_fuel(
             current_loc, trip_start_loc, end_loc,
@@ -385,7 +378,6 @@ def check_resource(identifier, conflict_type, current_loc, trip_start_loc,
         if fuel_conflict:
             return fuel_conflict
 
-    # ── 3. Reachability ──
     if current_loc == trip_start_loc:
         return None
 
@@ -396,15 +388,14 @@ def check_resource(identifier, conflict_type, current_loc, trip_start_loc,
             "No route found between locations",
             actual_start, actual_start, actual_end
         )
-
     if dist == 0:
         return None
 
     travel_secs = travel_time_secs(dist, speed)
-    depart_time = base_t0 - timedelta(seconds=travel_secs)
+    depart_time = actual_start - timedelta(seconds=travel_secs)
 
     travel_conflict, travel_window = overlaps_availability(
-        depart_time, base_t0, avail_windows
+        depart_time, actual_start, avail_windows
     )
     if travel_conflict:
         free_at          = travel_window[1]
@@ -419,18 +410,163 @@ def check_resource(identifier, conflict_type, current_loc, trip_start_loc,
 
 
 # ─────────────────────────────────────────────
+# RESOURCE STATE TRACKER
+# ─────────────────────────────────────────────
+
+def build_resource_states(trips, base_t0):
+    """
+    Walk each vehicle's and individual's trips in start_offset order.
+    Carry effective_location and effective_fuel forward trip by trip.
+
+    NEW: also track whether a prior trip for this resource had a conflict.
+    That flag is stored alongside so run_scheduler can emit cascade conflicts
+    instead of checking the dependent trip independently.
+
+    Returns:
+        vehicle_states[vn][trip_id]     = {effective_loc, effective_fuel, blocked_by}
+        individual_states[iid][trip_id] = {effective_loc, blocked_by}
+
+    blocked_by = trip_id of the earliest conflicting predecessor, or None.
+    """
+    vehicle_trips    = {}
+    individual_trips = {}
+
+    for trip in sorted(trips, key=lambda t: t["start_offset_secs"]):
+        vn = trip["vehicle_number"]
+        vehicle_trips.setdefault(vn, []).append(trip)
+        for crew in trip["crew"]:
+            individual_trips.setdefault(crew["individual_id"], []).append(trip)
+
+    # ── vehicle states ──
+    vehicle_states = {}
+
+    for vn, vtrips in vehicle_trips.items():
+        first            = vtrips[0]
+        effective_loc    = first["vehicle_current_loc"]
+        effective_fuel   = first["current_fuel"]
+        consumption_rate = first["fuel_consumption_rate"]
+        blocked_by       = None   # trip_id of first unresolved conflict in chain
+
+        vehicle_states[vn] = {}
+
+        for trip in vtrips:
+            tid = trip["trip_id"]
+
+            dist_deadhead = fetch_distance(effective_loc, trip["start_location_id"]) or 0.0
+            dist_trip_leg = fetch_distance(trip["start_location_id"], trip["end_location_id"]) or 0.0
+            fuel_this_leg = fuel_needed(dist_deadhead + dist_trip_leg, consumption_rate)
+
+            vehicle_states[vn][tid] = {
+                "effective_loc":  effective_loc,
+                "effective_fuel": max(effective_fuel, 0.0),
+                # If a prior trip in this vehicle's chain already failed,
+                # record it so we can emit a cascade conflict instead of
+                # re-checking location/fuel (which would be wrong anyway
+                # since we're assuming the prior trip completed).
+                "blocked_by":     blocked_by,
+            }
+
+            # Advance state — assume trip completes (optimistic carry-forward).
+            # Cascade flag is what surfaces the problem on dependent trips.
+            effective_fuel = max(effective_fuel - fuel_this_leg, 0.0)
+            effective_loc  = trip["end_location_id"]
+
+        # blocked_by is set by run_scheduler after it detects the first
+        # real conflict, then injected back into subsequent trip states.
+        # We do a second pass below once run_scheduler fills conflict_trips.
+
+    # ── individual states ──
+    individual_states = {}
+
+    for iid, itrips in individual_trips.items():
+        first         = itrips[0]
+        effective_loc = None
+        for crew in first["crew"]:
+            if crew["individual_id"] == iid:
+                effective_loc = crew["current_location_id"]
+                break
+        if effective_loc is None:
+            effective_loc = first["start_location_id"]
+
+        individual_states[iid] = {}
+
+        for trip in itrips:
+            tid = trip["trip_id"]
+            individual_states[iid][tid] = {
+                "effective_loc": effective_loc,
+                "blocked_by":    None,   # filled by run_scheduler
+            }
+            effective_loc = trip["end_location_id"]
+
+    return vehicle_states, individual_states
+
+
+def apply_cascade_blocks(vehicle_states, individual_states,
+                         failed_vehicle_trips, failed_individual_trips):
+    """
+    After the first pass of conflict detection, mark all downstream trips
+    for each resource that had a failure.
+
+    failed_vehicle_trips:     { vn  → set of trip_ids that directly failed }
+    failed_individual_trips:  { iid → set of trip_ids that directly failed }
+
+    For each resource, find the earliest failed trip in its ordered sequence,
+    then set blocked_by on every subsequent trip in that sequence.
+    """
+    for vn, state_by_trip in vehicle_states.items():
+        # trips in sequence order (dict insertion order is offset order
+        # because build_resource_states walked them sorted)
+        ordered_tids  = list(state_by_trip.keys())
+        failed_for_vn = failed_vehicle_trips.get(vn, set())
+        blocking_tid  = None
+
+        for tid in ordered_tids:
+            if blocking_tid is not None:
+                # This trip comes after a failed one — mark cascade
+                state_by_trip[tid]["blocked_by"] = blocking_tid
+            if tid in failed_for_vn and blocking_tid is None:
+                # First failure — all subsequent are blocked by this
+                blocking_tid = tid
+
+    for iid, state_by_trip in individual_states.items():
+        ordered_tids   = list(state_by_trip.keys())
+        failed_for_iid = failed_individual_trips.get(iid, set())
+        blocking_tid   = None
+
+        for tid in ordered_tids:
+            if blocking_tid is not None:
+                state_by_trip[tid]["blocked_by"] = blocking_tid
+            if tid in failed_for_iid and blocking_tid is None:
+                blocking_tid = tid
+
+
+# ─────────────────────────────────────────────
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────
 
 def run_scheduler(plan_id, date_str, time_str):
+    plan_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    if plan_date < datetime.today().date():
+        return {
+            "feasible":  False,
+            "schedule":  [],
+            "conflicts": [],
+            "error":     f"Cannot check plan for a past date ({date_str}). Please provide today's date or a future date."
+        }
+
     base_t0, trips = fetch_plan_data(plan_id, date_str, time_str)
     vehicle_avail, individual_avail = fetch_availability(plan_id)
+    vehicle_states, individual_states = build_resource_states(trips, base_t0)
 
-    all_conflicts    = []
-    schedule_output  = []
-    overall_feasible = True
+    # ── Pass 1: check every trip independently, collect direct failures ──
+    direct_conflicts         = []   # conflicts from real checks
+    failed_vehicle_trips     = {}   # vn  → set of trip_ids that directly failed
+    failed_individual_trips  = {}   # iid → set of trip_ids that directly failed
+    schedule_output          = []
 
-    for trip in trips:
+    sorted_trips = sorted(trips, key=lambda t: t["start_offset_secs"])
+
+    for trip in sorted_trips:
         tid          = trip["trip_id"]
         actual_start = base_t0 + timedelta(seconds=trip["start_offset_secs"])
         actual_end   = actual_start + timedelta(seconds=trip["duration_secs"])
@@ -442,41 +578,94 @@ def run_scheduler(plan_id, date_str, time_str):
             "sequenced":    False
         })
 
-        # ── Vehicle check ──
-        vn = trip["vehicle_number"]
-        c  = check_resource(
+        # ── Vehicle ──
+        vn     = trip["vehicle_number"]
+        vstate = vehicle_states[vn][tid]
+
+        c = check_resource(
             vn, "Vehicle",
-            trip["vehicle_current_loc"], trip["start_location_id"],
-            trip["vehicle_speed"], actual_start, actual_end,
-            vehicle_avail.get(vn, []), base_t0,
+            vstate["effective_loc"],
+            trip["start_location_id"],
+            trip["vehicle_speed"],
+            actual_start, actual_end,
+            vehicle_avail.get(vn, []),
+            base_t0,
             end_loc=trip["end_location_id"],
-            current_fuel=trip["current_fuel"],
+            current_fuel=vstate["effective_fuel"],
             fuel_capacity=trip["fuel_capacity"],
             consumption_rate=trip["fuel_consumption_rate"]
         )
         if c:
             c["trip_id"] = tid
-            overall_feasible = False
-            all_conflicts.append(c)
+            direct_conflicts.append(c)
+            failed_vehicle_trips.setdefault(vn, set()).add(tid)
 
-        # ── Crew checks ──
+        # ── Crew ──
         for crew in trip["crew"]:
-            iid = crew["individual_id"]
-            c   = check_resource(
+            iid    = crew["individual_id"]
+            istate = individual_states.get(iid, {}).get(tid)
+            eff_crew_loc = istate["effective_loc"] if istate else crew["current_location_id"]
+
+            c = check_resource(
                 crew["name"], "Individual",
-                crew["current_location_id"], trip["start_location_id"],
-                INDIVIDUAL_SPEED_KMH, actual_start, actual_end,
-                individual_avail.get(iid, []), base_t0
+                eff_crew_loc,
+                trip["start_location_id"],
+                INDIVIDUAL_SPEED_KMH,
+                actual_start, actual_end,
+                individual_avail.get(iid, []),
+                base_t0
             )
             if c:
                 c["trip_id"] = tid
-                overall_feasible = False
-                all_conflicts.append(c)
+                direct_conflicts.append(c)
+                failed_individual_trips.setdefault(iid, set()).add(tid)
+
+    # ── Pass 2: mark cascade blocks on downstream trips ──
+    apply_cascade_blocks(
+        vehicle_states, individual_states,
+        failed_vehicle_trips, failed_individual_trips
+    )
+
+    # ── Pass 3: emit cascade conflicts for blocked downstream trips ──
+    # Only emit cascade if the trip has no direct conflict already
+    # (avoids double-reporting).
+    direct_conflict_trip_ids = {c["trip_id"] for c in direct_conflicts}
+    cascade_conflicts = []
+
+    for trip in sorted_trips:
+        tid          = trip["trip_id"]
+        actual_start = base_t0 + timedelta(seconds=trip["start_offset_secs"])
+        actual_end   = actual_start + timedelta(seconds=trip["duration_secs"])
+
+        # Vehicle cascade
+        vn     = trip["vehicle_number"]
+        vstate = vehicle_states[vn][tid]
+        if vstate["blocked_by"] is not None and tid not in direct_conflict_trip_ids:
+            cascade_conflicts.append(make_cascade_conflict(
+                tid, vn, "Vehicle",
+                vstate["blocked_by"],
+                actual_start, actual_end
+            ))
+            direct_conflict_trip_ids.add(tid)   # don't double-add from crew check
+
+        # Individual cascade
+        for crew in trip["crew"]:
+            iid    = crew["individual_id"]
+            istate = individual_states.get(iid, {}).get(tid)
+            if istate and istate["blocked_by"] is not None and tid not in direct_conflict_trip_ids:
+                cascade_conflicts.append(make_cascade_conflict(
+                    tid, crew["name"], "Individual",
+                    istate["blocked_by"],
+                    actual_start, actual_end
+                ))
+
+    all_conflicts    = direct_conflicts + cascade_conflicts
+    overall_feasible = len(all_conflicts) == 0
 
     schedule_output.sort(key=lambda x: x["actual_start"])
 
     return {
-        "feasible":  overall_feasible and len(all_conflicts) == 0,
+        "feasible":  overall_feasible,
         "schedule":  schedule_output,
         "conflicts": all_conflicts
     }

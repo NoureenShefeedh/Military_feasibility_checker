@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from db import get_connection
-from routes.scheduler import (
+from routes.feasible import (
     fetch_distance, travel_time_secs, overlaps_availability,
     fetch_fuel_stations, fetch_location_has_fuel,
     fuel_needed, check_vehicle_fuel,
@@ -46,7 +46,8 @@ def fetch_same_type_vehicles(vehicle_number, exclude_numbers):
             vt.default_speed,
             v.current_fuel_level,
             vt.fuel_capacity,
-            vt.fuel_consumption_rate
+            vt.fuel_consumption_rate,
+            vt.max_load_capacity
         FROM vehicles v
         JOIN vehicle_types vt ON vt.vehicle_type_id = v.vehicle_type_id
         WHERE vt.vehicle_type_id = (
@@ -92,11 +93,11 @@ def fetch_same_type_vehicles(vehicle_number, exclude_numbers):
             "current_fuel":          float(r[4]),
             "fuel_capacity":         float(r[5]),
             "fuel_consumption_rate": float(r[6]),
+            "max_load_capacity":     float(r[7]),
             "avail_windows":         avail_map.get(r[0], [])
         }
         for r in rows
     ]
-
 
 def fetch_same_type_individuals(individual_id, exclude_ids):
     conn = get_connection()
@@ -150,27 +151,38 @@ def fetch_same_type_individuals(individual_id, exclude_ids):
         for r in rows
     ]
 
-
-def fetch_original_vehicle_capacity(vehicle_number):
+def fetch_trip_actual_load(trip_id):
+    """
+    Returns actual load weight in kg:
+        trips.quantity_of_load * load_types.weight
+    Falls back to 0.0 if either is missing.
+    """
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute("""
-        SELECT vt.max_load_capacity
-        FROM vehicles v
-        JOIN vehicle_types vt ON vt.vehicle_type_id = v.vehicle_type_id
-        WHERE v.vehicle_number = %s
-    """, (vehicle_number,))
+        SELECT t.quantity_of_load, lt.weight
+        FROM trips t
+        JOIN load_types lt ON lt.load_type_id = t.load_type_id
+        WHERE t.trip_id = %s
+    """, (trip_id,))
     row = cur.fetchone()
     cur.close()
     conn.close()
-    return float(row[0]) if row else 0.0
+    if not row or row[0] is None or row[1] is None:
+        return 0.0
+    return float(row[0]) * float(row[1])
 
 
 def fetch_any_capable_vehicles(
-    exclude_numbers, min_capacity,
+    exclude_numbers,
     trip_start_loc, trip_end_loc,
     base_t0, actual_start, actual_end
 ):
+    """
+    Returns every vehicle not in exclude_numbers that passes
+    availability + reachability + fuel checks, with fuel_cost attached.
+    No capacity filter here — capacity is checked in the combo builder.
+    """
     conn = get_connection()
     cur  = conn.cursor()
 
@@ -238,17 +250,19 @@ def fetch_any_capable_vehicles(
             "avail_windows":         avail_windows,
         }
 
-        ok = is_vehicle_available_reachable_fuelled(
+        if not is_vehicle_available_reachable_fuelled(
             candidate, trip_start_loc, trip_end_loc,
             actual_start, actual_end, base_t0
-        )
-        if not ok:
+        ):
             continue
 
         fuel_cost = compute_vehicle_fuel_cost(
             current_loc, trip_start_loc, trip_end_loc,
             current_fuel, fuel_capacity, consumption_rate, speed
         )
+        if fuel_cost == float("inf"):
+            continue
+
         candidate["fuel_cost"] = fuel_cost
         candidates.append(candidate)
 
@@ -271,7 +285,7 @@ def is_vehicle_available_reachable_fuelled(
     consumption_rate = candidate["fuel_consumption_rate"]
 
     # 1. Availability
-    conflict, _ = overlaps_availability(base_t0, actual_end, avail_windows)
+    conflict, _ = overlaps_availability(actual_start, actual_end, avail_windows)
     if conflict:
         return False
 
@@ -311,7 +325,7 @@ def is_individual_available_reachable(
     current_loc   = candidate["current_location"]
 
     # 1. Availability
-    conflict, _ = overlaps_availability(base_t0, actual_end, avail_windows)
+    conflict, _ = overlaps_availability(actual_start, actual_end, avail_windows)
     if conflict:
         return False
 
@@ -383,17 +397,44 @@ def compute_vehicle_fuel_cost(
 # ─────────────────────────────────────────────
 
 def find_optimal_vehicle_combo(
-    original_vehicle_number, trip_start_loc, trip_end_loc,
+    original_vehicle_number,
+    trip_id,
+    trip_start_loc, trip_end_loc,
     actual_start, actual_end, base_t0,
     assigned_vehicles, used_replacements_vehicles
 ):
     from itertools import combinations
 
-    original_capacity = fetch_original_vehicle_capacity(original_vehicle_number)
-    exclude           = assigned_vehicles | used_replacements_vehicles
+    # ── Capacity threshold: actual load beats vehicle type ceiling ──
+    actual_load = fetch_trip_actual_load(trip_id)
+
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT vt.max_load_capacity
+        FROM vehicles v
+        JOIN vehicle_types vt ON vt.vehicle_type_id = v.vehicle_type_id
+        WHERE v.vehicle_number = %s
+    """, (original_vehicle_number,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    vehicle_type_capacity = float(row[0]) if row else 0.0
+
+    # Use whichever is the tighter / more honest requirement.
+    # actual_load > 0 means we have a real weight to satisfy.
+    # If actual_load somehow exceeds the original vehicle's capacity
+    # (data anomaly) fall back to the type capacity so we don't
+    # under-spec the replacement.
+    if actual_load > 0:
+        required_capacity = min(actual_load, vehicle_type_capacity)
+    else:
+        required_capacity = vehicle_type_capacity
+
+    exclude = assigned_vehicles | used_replacements_vehicles
 
     viable = fetch_any_capable_vehicles(
-        exclude, original_capacity,
+        exclude,
         trip_start_loc, trip_end_loc,
         base_t0, actual_start, actual_end
     )
@@ -401,18 +442,30 @@ def find_optimal_vehicle_combo(
     if not viable:
         return None, float("inf")
 
-    best_combo = None
-    best_fuel  = float("inf")
+    # Sort by fuel_cost ascending — lower fuel ≡ shorter/closer route,
+    # so this also implicitly prefers nearer vehicles without a
+    # redundant distance pass.
+    viable.sort(key=lambda v: v["fuel_cost"])
+
+    best_combo      = None
+    best_fuel       = float("inf")
+    best_combo_size = float("inf")
 
     for size in range(1, min(4, len(viable) + 1)):
         for combo in combinations(viable, size):
             total_capacity = sum(v["max_load_capacity"] for v in combo)
-            if total_capacity < original_capacity:
+            if total_capacity < required_capacity:
                 continue
+
             total_fuel = sum(v["fuel_cost"] for v in combo)
-            if total_fuel < best_fuel:
-                best_fuel  = total_fuel
-                best_combo = list(combo)
+
+            # Prefer: fewer vehicles first, then lower total fuel cost.
+            if size < best_combo_size or (
+                size == best_combo_size and total_fuel < best_fuel
+            ):
+                best_fuel       = total_fuel
+                best_combo_size = size
+                best_combo      = list(combo)
 
     return best_combo, best_fuel
 
@@ -458,25 +511,37 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         # ── Vehicle conflict ──
         if ctype == "Vehicle":
 
-            # Step 1: same type
+            # Step 1: single same-type swap (fastest, no split)
             candidates = fetch_same_type_vehicles(
                 identifier,
                 assigned_vehicles | used_replacements_vehicles
             )
 
             best      = None
-            best_dist = float("inf")
+            best_fuel = float("inf")
 
             for candidate in candidates:
-                ok = is_vehicle_available_reachable_fuelled(
+                if not is_vehicle_available_reachable_fuelled(
                     candidate, trip_start_loc, trip_end_loc,
                     actual_start, actual_end, base_t0
+                ):
+                    continue
+
+                fuel_cost = compute_vehicle_fuel_cost(
+                    candidate["current_location"],
+                    trip_start_loc, trip_end_loc,
+                    candidate["current_fuel"],
+                    candidate["fuel_capacity"],
+                    candidate["fuel_consumption_rate"],
+                    candidate["speed"]
                 )
-                if ok:
-                    dist = fetch_distance(candidate["current_location"], trip_start_loc) or 0.0
-                    if dist < best_dist:
-                        best_dist = dist
-                        best      = candidate
+                if fuel_cost == float("inf"):
+                    continue
+
+                # Best = lowest fuel cost (distance is baked in)
+                if fuel_cost < best_fuel:
+                    best_fuel = fuel_cost
+                    best      = candidate
 
             if best:
                 used_replacements_vehicles.add(best["vehicle_number"])
@@ -486,15 +551,18 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     "conflict_type":    "Vehicle",
                     "replacement":      best["vehicle_number"],
                     "replacement_name": best["vehicle_name"],
+                    "fuel_cost":        round(best_fuel, 2),
                     "resolved":         True,
                     "resolution_type":  "same_type",
                     "split":            False
                 })
 
             else:
-                # Step 2: any type, optimal fuel combo
+                # Step 2: cross-type / split combo using actual load weight
                 combo, total_fuel = find_optimal_vehicle_combo(
-                    identifier, trip_start_loc, trip_end_loc,
+                    identifier,
+                    trip_id,                        # ← pass trip_id for actual load
+                    trip_start_loc, trip_end_loc,
                     actual_start, actual_end, base_t0,
                     assigned_vehicles, used_replacements_vehicles
                 )
@@ -549,15 +617,16 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             best_dist = float("inf")
 
             for candidate in candidates:
-                ok = is_individual_available_reachable(
+                if not is_individual_available_reachable(
                     candidate, trip_start_loc,
                     actual_start, actual_end, base_t0
-                )
-                if ok:
-                    dist = fetch_distance(candidate["current_location"], trip_start_loc) or 0.0
-                    if dist < best_dist:
-                        best_dist = dist
-                        best      = candidate
+                ):
+                    continue
+
+                dist = fetch_distance(candidate["current_location"], trip_start_loc) or 0.0
+                if dist < best_dist:
+                    best_dist = dist
+                    best      = candidate
 
             if best:
                 used_replacements_individuals.add(best["individual_id"])

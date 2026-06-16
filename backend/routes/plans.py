@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify, request
 from db import get_connection
-from routes.scheduler import run_scheduler, fetch_plan_data
+from routes.feasible import run_scheduler, fetch_plan_data
 from routes.resolver import resolve_conflicts
 
 plans_bp = Blueprint('plans', __name__)
