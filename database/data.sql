@@ -152,3 +152,114 @@ VALUES (
     3,
     1
 );
+INSERT INTO individuals (name, crew_type_id, current_location_id)
+VALUES
+('Ravi', 1, 1);
+
+INSERT INTO individual_availability (
+    individual_id,
+    reason,
+    not_available_from,
+    not_available_to
+)
+VALUES (
+    1,
+    'Medical leave',
+    '2026-06-27 07:00:00',
+    '2026-06-27 18:00:00'
+);
+
+INSERT INTO plans (plan_name, num_of_vehicles, default_start_time, total_fuel)
+VALUES ('Dependency Test Plan', 5, '08:00:00', 0);
+
+INSERT INTO trips (
+    plan_id, vehicle_number, route_id, load_type_id,
+    start_offset, duration, quantity_of_load, unit_id
+) VALUES
+
+-- Trip 1
+(2, 'V-101', 1, 1, '00:00:00', '01:00:00', 5, 1),
+
+-- Trip 2
+(2, 'V-101', 3, 2, '00:00:00', '01:30:00', 3, 1),
+
+-- Trip 3
+(2, 'V-101', 5, 3, '00:00:00', '02:00:00', 2, 1);
+
+INSERT INTO trips (
+    plan_id, vehicle_number, route_id, load_type_id,
+    start_offset, duration, quantity_of_load, unit_id
+) VALUES
+
+-- Trip 4
+(2, 'V-100', 1, 1, '00:00:00', '01:00:00', 5, 1),
+
+-- Trip 5
+(2, 'V-103', 2, 2, '02:00:00', '01:30:00', 3, 1);
+
+
+INSERT INTO trip_crew (trip_id, individual_id) VALUES 
+(4, 1),
+(5, 2),
+(6, 3),
+(7,4),
+(8,4);
+
+INSERT INTO vehicle_availability (
+    vehicle_number,
+    not_available_from,
+    not_available_to,
+    reason
+)
+VALUES (
+    'V-101',
+    '2026-06-30 08:00:00',
+    '2026-06-30 17:00:00',
+    'Maintenance'
+);
+
+INSERT INTO vehicle_availability (
+    vehicle_number,
+    reason,
+    not_available_from,
+    not_available_to
+)
+VALUES (
+    'V-102',
+    'Scheduled Inspection',
+    '2026-07-02 00:00:00',
+    '2026-07-02 23:59:00'
+);
+-- Make V-104 unavailable on July 2nd
+INSERT INTO vehicle_availability (
+    vehicle_number,
+    reason,
+    not_available_from,
+    not_available_to
+)
+VALUES (
+    'V-104',
+    'Driver Shortage',
+    '2026-07-02 00:00:00',
+    '2026-07-02 23:59:00'
+);
+
+-- Make V-105 unavailable on July 2nd
+INSERT INTO vehicle_availability (
+    vehicle_number,
+    reason,
+    not_available_from,
+    not_available_to
+)
+VALUES (
+    'V-105',
+    'Driver Shortage',
+    '2026-07-02 00:00:00',
+    '2026-07-02 23:59:00'
+);
+UPDATE locations
+SET has_fuel_station = TRUE
+WHERE location_id = 2;
+UPDATE locations
+SET has_fuel_station = TRUE
+WHERE location_id = 3;

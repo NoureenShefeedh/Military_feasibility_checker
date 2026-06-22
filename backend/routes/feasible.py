@@ -1,22 +1,39 @@
+from curses import window
 from datetime import datetime, timedelta
 from db import get_connection
 
+ 
+# ─────────────────────────────────────────────
+# CONSTANTS
+# ─────────────────────────────────────────────
+
+# Speed (km/h) assumed for crew members travelling on foot / by personal transport
+# to reach a trip's start location.
 INDIVIDUAL_SPEED_KMH = 40.0
+
+# Time (minutes) assumed for a vehicle to complete a fuel fill-up stop.
 FUEL_FILL_TIME_MINS  = 10
 
 
 # ─────────────────────────────────────────────
 # DATA FETCHING
 # ─────────────────────────────────────────────
+# Load all trips belonging to *plan_id* for a given date, together with
+# every trip's route, vehicle, and crew details.
+
 
 def fetch_plan_data(plan_id, date_str, time_str):
     conn = get_connection()
     cur  = conn.cursor()
 
+
+    # Retrieve the plan's default start time so we can fall back to it
+    # when the caller has not provided an explicit override.
     cur.execute("SELECT default_start_time FROM plans WHERE plan_id = %s", (plan_id,))
     row           = cur.fetchone()
     default_start = row[0]
 
+    # Decide which time to use as the plan's BASE_T0.
     if time_str:
         t0_time = datetime.strptime(time_str, "%H:%M").time()
     else:
@@ -25,6 +42,8 @@ def fetch_plan_data(plan_id, date_str, time_str):
     base_date = datetime.strptime(date_str, "%Y-%m-%d")
     base_t0   = datetime.combine(base_date, t0_time)
 
+    # Fetch every trip for this plan, joining in route, vehicle, and vehicle-type
+    # data so we have everything needed for conflict detection in a single query.
     cur.execute("""
         SELECT
             t.trip_id,
@@ -51,6 +70,7 @@ def fetch_plan_data(plan_id, date_str, time_str):
     for row in trip_rows:
         trip_id = row[0]
 
+        # For each trip, also load the assigned crew members.
         cur.execute("""
             SELECT i.individual_id, i.current_location_id, i.name
             FROM trip_crew tc
@@ -59,6 +79,8 @@ def fetch_plan_data(plan_id, date_str, time_str):
         """, (trip_id,))
         crew = cur.fetchall()
 
+
+        # Convert a time object to total seconds 
         def time_to_secs(t):
             return t.hour * 3600 + t.minute * 60 + t.second
 
@@ -84,8 +106,9 @@ def fetch_plan_data(plan_id, date_str, time_str):
     conn.close()
     return base_t0, trips
 
-
+#Get distance between two locations using location IDs. Returns None if no route exists.
 def fetch_distance(from_loc, to_loc):
+    #returns 0.0 if from_loc and to_loc are the same
     if from_loc == to_loc:
         return 0.0
     conn = get_connection()
@@ -100,7 +123,7 @@ def fetch_distance(from_loc, to_loc):
     conn.close()
     return float(row[0]) if row else None
 
-
+#Return every location that has a fuel station available.
 def fetch_fuel_stations():
     conn = get_connection()
     cur  = conn.cursor()
@@ -114,7 +137,8 @@ def fetch_fuel_stations():
     conn.close()
     return [{"location_id": r[0], "location_name": r[1]} for r in rows]
 
-
+#Load all unavailability windows for every vehicle and individual that
+#appears in the given plan.
 def fetch_availability(plan_id):
     conn = get_connection()
     cur  = conn.cursor()
@@ -153,7 +177,7 @@ def fetch_availability(plan_id):
     conn.close()
     return vehicle_avail, individual_avail
 
-
+#Check whether a specific location has a fuel station.
 def fetch_location_has_fuel(location_id):
     conn = get_connection()
     cur  = conn.cursor()
@@ -171,18 +195,20 @@ def fetch_location_has_fuel(location_id):
 # HELPERS
 # ─────────────────────────────────────────────
 
+#Convert a distance and speed into a travel duration in seconds.
 def travel_time_secs(distance_km, speed_kmh):
     if distance_km is None or distance_km == 0:
         return 0.0
     return (distance_km / speed_kmh) * 3600.0
 
-
+#Convert a distance and fuel consumption rate into the amount of fuel needed.
 def fuel_needed(distance_km, consumption_rate):
     if distance_km is None or distance_km == 0:
         return 0.0
     return distance_km * consumption_rate
 
-
+#Test whether the interval [start_dt, end_dt) overlaps any unavailability
+#window in *avail_windows*
 def overlaps_availability(start_dt, end_dt, avail_windows):
     for not_from, not_to, reason in avail_windows:
         nf = not_from.replace(tzinfo=None) if not_from.tzinfo is not None else not_from
@@ -195,7 +221,9 @@ def overlaps_availability(start_dt, end_dt, avail_windows):
 # ─────────────────────────────────────────────
 # CONFLICT MAKERS
 # ─────────────────────────────────────────────
-
+#Build a conflict dict for a resource that is explicitly marked
+#unavailable during the trip window.   The 'earliest_available' field tells callers the soonest they could
+   # reschedule, which equals the end of the unavailability window.
 def make_unavailable_conflict(trip_id, identifier, conflict_type, window, actual_start, actual_end):
     return {
         "trip_id":            trip_id,
@@ -210,7 +238,8 @@ def make_unavailable_conflict(trip_id, identifier, conflict_type, window, actual
         "actual_end":         actual_end.isoformat()   if hasattr(actual_end,   'isoformat') else str(actual_end),
     }
 
-
+ #Build a conflict dict for a vehicle that cannot reach the trip's start
+  # location due to insufficient fuel, and cannot be refuelled in time
 def make_fuel_conflict(trip_id, identifier, conflict_type, reason, actual_start, actual_end):
     return {
         "trip_id":            trip_id,
@@ -225,7 +254,10 @@ def make_fuel_conflict(trip_id, identifier, conflict_type, reason, actual_start,
         "actual_end":         actual_end.isoformat()   if hasattr(actual_end,   'isoformat') else str(actual_end),
     }
 
-
+#Build a conflict dict for the case where a vehicle *could* refuel
+    #(a station exists and is reachable) but the detour to refuel would
+    #fall within an unavailability window, making it impossible to refuel
+    #and still arrive at the trip start on time.
 def make_fuel_stop_late_conflict(trip_id, identifier, conflict_type, reason, actual_start, actual_end):
     return {
         "trip_id":            trip_id,
@@ -240,7 +272,8 @@ def make_fuel_stop_late_conflict(trip_id, identifier, conflict_type, reason, act
         "actual_end":         actual_end.isoformat()   if hasattr(actual_end,   'isoformat') else str(actual_end),
     }
 
-
+   #Build a conflict dict for a resource that physically cannot reach the
+    #trip's start location by the scheduled departure time.
 def make_unreachable_conflict(trip_id, identifier, conflict_type, reason, earliest_arrival, actual_start, actual_end):
     return {
         "trip_id":            trip_id,
@@ -255,7 +288,8 @@ def make_unreachable_conflict(trip_id, identifier, conflict_type, reason, earlie
         "actual_end":         actual_end.isoformat()   if hasattr(actual_end,   'isoformat') else str(actual_end),
     }
 
-
+ # Build a conflict dict for a trip that cannot proceed because an earlier
+   # trip using the same resource already failed.
 def make_cascade_conflict(trip_id, identifier, conflict_type, blocking_trip_id, actual_start, actual_end):
     return {
         "trip_id":            trip_id,
@@ -276,6 +310,17 @@ def make_cascade_conflict(trip_id, identifier, conflict_type, blocking_trip_id, 
 # FUEL CHECK
 # ─────────────────────────────────────────────
 
+"""Logic summary
+    -------------
+    1. If current fuel is already sufficient → no conflict.
+    2. If the vehicle is currently AT a fuel station:
+       a. Check whether a full tank would even cover the distance (capacity check).
+       b. Check that the refuel + travel time doesn't push the departure into
+          an unavailability window.
+    3. Otherwise, search all fuel stations for the best (fastest) detour:
+       a. The station must be reachable on current fuel.
+       b. After filling up, the vehicle must be able to reach the trip start.
+       c. The entire detour must fit inside an availability window."""
 def check_vehicle_fuel(
     current_loc, start_loc, end_loc,
     current_fuel, fuel_capacity, consumption_rate,
@@ -284,8 +329,11 @@ def check_vehicle_fuel(
 ):
     fill_time_secs = FUEL_FILL_TIME_MINS * 60
 
+    #find distance and fuel needed to reach start location from current location
     dist_to_start = fetch_distance(current_loc, start_loc) or 0.0
+    #fuel needed to reach start location from current location
     fuel_to_start = fuel_needed(dist_to_start, consumption_rate)
+
 
     if current_fuel >= fuel_to_start:
         return None
@@ -299,12 +347,12 @@ def check_vehicle_fuel(
             )
         travel_to_start_secs = travel_time_secs(dist_to_start, vehicle_speed)
         total_time_needed    = fill_time_secs + travel_to_start_secs
-        detour_start         = base_t0 - timedelta(seconds=total_time_needed)
-        conflict, _ = overlaps_availability(detour_start, base_t0, avail_windows)
+        detour_start         = actual_start - timedelta(seconds=total_time_needed)
+        conflict, _ = overlaps_availability(detour_start, actual_start, avail_windows)
         if conflict:
             return make_fuel_stop_late_conflict(
                 None, identifier, "Vehicle",
-                "Insufficient fuel — refuel at current location but unavailable during travel window to start location",
+                "Insufficient fuel — refuel at current location but unable to reach start location on time ",
                 actual_start, actual_end
             )
         return None
@@ -341,12 +389,12 @@ def check_vehicle_fuel(
             actual_start, actual_end
         )
 
-    detour_start = base_t0 - timedelta(seconds=best_total_travel)
-    conflict, _ = overlaps_availability(detour_start, base_t0, avail_windows)
+    detour_start = actual_start - timedelta(seconds=best_total_travel)
+    conflict, _ = overlaps_availability(detour_start, actual_start, avail_windows)
     if conflict:
         return make_fuel_stop_late_conflict(
             None, identifier, "Vehicle",
-            f"Insufficient fuel — nearest viable fuel stop is {best_station['location_name']} but unavailable during detour window",
+            f"Insufficient fuel — nearest viable fuel stop is {best_station['location_name']} but unable to reach on time ",
             actual_start, actual_end
         )
 
@@ -356,7 +404,10 @@ def check_vehicle_fuel(
 # ─────────────────────────────────────────────
 # RESOURCE CHECK
 # ─────────────────────────────────────────────
-
+#checks perfored
+#Availability check: does the resource have any unavailability windows that overlap the trip's actual start and end times?
+#Fuel check (for vehicles): if the resource is a vehicle, does it have enough fuel to reach the trip's start location? If not, can it refuel in time?
+#Reaching start location check: can the resource physically reach the trip's start location from its current location in time for the trip's actual start time?
 def check_resource(identifier, conflict_type, current_loc, trip_start_loc,
                    speed, actual_start, actual_end, avail_windows, base_t0,
                    end_loc=None, current_fuel=None,
@@ -415,18 +466,9 @@ def check_resource(identifier, conflict_type, current_loc, trip_start_loc,
 
 def build_resource_states(trips, base_t0):
     """
-    Walk each vehicle's and individual's trips in start_offset order.
-    Carry effective_location and effective_fuel forward trip by trip.
-
-    NEW: also track whether a prior trip for this resource had a conflict.
-    That flag is stored alongside so run_scheduler can emit cascade conflicts
-    instead of checking the dependent trip independently.
-
-    Returns:
-        vehicle_states[vn][trip_id]     = {effective_loc, effective_fuel, blocked_by}
-        individual_states[iid][trip_id] = {effective_loc, blocked_by}
-
-    blocked_by = trip_id of the earliest conflicting predecessor, or None.
+    Pre-compute the *effective* location and fuel level for each resource
+    at the start of every trip it is assigned to, assuming all prior trips
+    in the sequence complete successfully (optimistic carry-forward).
     """
     vehicle_trips    = {}
     individual_trips = {}
@@ -545,6 +587,8 @@ def apply_cascade_blocks(vehicle_states, individual_states,
 # ─────────────────────────────────────────────
 
 def run_scheduler(plan_id, date_str, time_str):
+
+    # Guard: refuse to evaluate plans for dates already in the past,
     plan_date = datetime.strptime(date_str, "%Y-%m-%d").date()
     if plan_date < datetime.today().date():
         return {
@@ -563,7 +607,7 @@ def run_scheduler(plan_id, date_str, time_str):
     failed_vehicle_trips     = {}   # vn  → set of trip_ids that directly failed
     failed_individual_trips  = {}   # iid → set of trip_ids that directly failed
     schedule_output          = []
-
+    # Sort trips by their start offset to process in chronological order.
     sorted_trips = sorted(trips, key=lambda t: t["start_offset_secs"])
 
     for trip in sorted_trips:

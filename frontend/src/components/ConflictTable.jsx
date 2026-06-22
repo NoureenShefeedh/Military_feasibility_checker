@@ -1,3 +1,5 @@
+import React from "react";
+
 export default function ConflictTable({ conflicts, resolutions }) {
   const vehicles = conflicts.filter(c => c.conflict_type === "Vehicle");
   const crew     = conflicts.filter(c => c.conflict_type === "Individual");
@@ -10,13 +12,9 @@ export default function ConflictTable({ conflicts, resolutions }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "28px" }}>
 
-      {/* Vehicle conflicts */}
       {vehicles.length > 0 && <Section title="Vehicle Conflicts" data={vehicles} />}
+      {crew.length > 0     && <Section title="Personnel Conflicts" data={crew} />}
 
-      {/* Personnel conflicts */}
-      {crew.length > 0 && <Section title="Personnel Conflicts" data={crew} />}
-
-      {/* Replacements found */}
       {resolved.length > 0 && (
         <div>
           <p style={sectionLabelStyle}>Suggested Replacements</p>
@@ -30,55 +28,58 @@ export default function ConflictTable({ conflicts, resolutions }) {
             </thead>
             <tbody>
               {resolved.map((r, i) => (
-                <tr key={i} style={{
-                  borderBottom: "1px solid #f0f0f0",
-                  background: i % 2 === 0 ? "#fff" : "#fafafa"
-                }}>
-                  <td style={tdStyle}>Trip {r.trip_id}</td>
-                  <td style={tdStyle}>
-                    <Badge
-                      text={r.conflict_type}
-                      color={r.conflict_type === "Vehicle" ? "#1a1a2e" : "#2e7d52"}
-                    />
-                  </td>
-                  <td style={{ ...tdStyle, fontWeight: 600, color: "#c0392b" }}>
-                    {r.original}
-                  </td>
-                  <td style={{ ...tdStyle, fontWeight: 600, color: "#2e7d52" }}>
-                    {r.conflict_type === "Vehicle"
-                      ? <>
-                          {Array.isArray(r.replacement)
-                            ? r.replacement.join(", ")
-                            : r.replacement
-                          }
-                          <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
-                            {Array.isArray(r.replacement_name)
-                              ? r.replacement_name.join(", ")
-                              : r.replacement_name
-                            }
-                          </span>
-                        </>
-                      : <>
-                          {r.replacement_name}
-                          {r.crew_type && (
+                // ── Fragment so RoundsTable row sits inside <tbody> ──
+                <React.Fragment key={i}>
+                  <tr style={{
+                    borderBottom: r.rounds ? "none" : "1px solid #f0f0f0",
+                    background: i % 2 === 0 ? "#fff" : "#fafafa"
+                  }}>
+                    <td style={tdStyle}>Trip {r.trip_id}</td>
+                    <td style={tdStyle}>
+                      <Badge
+                        text={r.conflict_type}
+                        color={r.conflict_type === "Vehicle" ? "#1a1a2e" : "#2e7d52"}
+                      />
+                    </td>
+                    <td style={{ ...tdStyle, fontWeight: 600, color: "#c0392b" }}>
+                      {r.original}
+                    </td>
+                    <td style={{ ...tdStyle, fontWeight: 600, color: "#2e7d52" }}>
+                      {r.conflict_type === "Vehicle"
+                        ? <>
+                            {Array.isArray(r.replacement)
+                              ? r.replacement.join(", ")
+                              : r.replacement}
                             <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
-                              ({r.crew_type})
+                              {Array.isArray(r.replacement_name)
+                                ? r.replacement_name.join(", ")
+                                : r.replacement_name}
                             </span>
-                          )}
-                        </>
-                    }
-                  </td>
-                  <td style={tdStyle}>
-                    <TypeMatchBadge resolution={r} />
-                  </td>
-                </tr>
+                          </>
+                        : <>
+                            {r.replacement_name}
+                            {r.crew_type && (
+                              <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
+                                ({r.crew_type})
+                              </span>
+                            )}
+                          </>
+                      }
+                    </td>
+                    <td style={tdStyle}>
+                      <TypeMatchBadge resolution={r} />
+                    </td>
+                  </tr>
+
+                  {/* Inline round trip schedule — only renders when rounds exist */}
+                  <RoundsTable rounds={r.rounds} />
+                </React.Fragment>
               ))}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* No replacement found */}
       {unresolved.length > 0 && (
         <div>
           <p style={sectionLabelStyle}>No Replacement Found</p>
@@ -123,26 +124,90 @@ export default function ConflictTable({ conflicts, resolutions }) {
   );
 }
 
+function RoundsTable({ rounds }) {
+  if (!rounds || rounds.length === 0) return null;
+
+  return (
+    <tr>
+      <td colSpan={5} style={{ padding: "0 14px 14px 14px", background: "#f4f8ff" }}>
+        <div style={{
+          border: "1px solid #c8ddf5",
+          borderRadius: "6px",
+          overflow: "hidden",
+          marginTop: "4px"
+        }}>
+          <div style={{
+            padding: "8px 14px",
+            background: "#e8f0fb",
+            fontSize: "11px",
+            fontWeight: 700,
+            letterSpacing: "0.8px",
+            textTransform: "uppercase",
+            color: "#1a6eb5"
+          }}>
+            Round Trip Schedule
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+            <thead>
+              <tr style={{ background: "#f0f5fd" }}>
+                {["Round", "Load (kg)", "Depart", "Arrive", "Note"].map(h => (
+                  <th key={h} style={{
+                    padding: "7px 12px", textAlign: "left",
+                    color: "#555", fontWeight: 600,
+                    borderBottom: "1px solid #d0e2f5"
+                  }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rounds.map((r, i) => (
+                <tr key={i} style={{
+                  borderBottom: i < rounds.length - 1 ? "1px solid #e8f0fb" : "none",
+                  background: i % 2 === 0 ? "#fff" : "#f9fbff"
+                }}>
+                  <td style={{ padding: "7px 12px", fontWeight: 700, color: "#1a6eb5" }}>
+                    #{r.round}
+                  </td>
+                  <td style={{ padding: "7px 12px", color: "#444" }}>
+                    {r.load?.toLocaleString()}
+                  </td>
+                  <td style={{ padding: "7px 12px", color: "#444" }}>
+                    {fmt(r.depart_start)}
+                  </td>
+                  <td style={{ padding: "7px 12px", color: "#444" }}>
+                    {fmt(r.arrive_end)}
+                  </td>
+                  <td style={{ padding: "7px 12px", color: "#e67e22", fontSize: "11px", fontWeight: 500 }}>
+                    {r.refuel_note || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function TypeMatchBadge({ resolution }) {
   const { resolution_type, split, conflict_type } = resolution;
 
-  // Individuals always same type (strict crew type matching)
   if (conflict_type === "Individual") {
     return <Badge text="Same Type" color="#2e7d52" />;
   }
-
-  if (resolution_type === "same_type") {
+  if (resolution_type === "same_type_single") {
     return <Badge text="Same Type" color="#2e7d52" />;
   }
-
-  if (resolution_type === "cross_type" && split) {
+  if (resolution_type === "multi_vehicle_combo" && split) {
     return <Badge text="Split Load ⚠" color="#8e44ad" />;
   }
-
-  if (resolution_type === "cross_type") {
+  if (resolution_type === "multi_vehicle_combo") {
     return <Badge text="Cross Type ⚠" color="#e67e22" />;
   }
-
+  if (resolution_type === "single_vehicle_round_trips") {
+    return <Badge text="Round Trips ↺" color="#1a6eb5" />;
+  }
   return <Badge text="—" color="#888" />;
 }
 
@@ -188,17 +253,18 @@ function Section({ title, data }) {
 
 function SubtypeBadge({ subtype }) {
   const map = {
-    unavailable:    { label: "Unavailable",      color: "#c0392b" },
-    fuel:           { label: "Insufficient Fuel", color: "#8e44ad" },
-    fuel_stop_late: { label: "Fuel Stop Late",    color: "#e67e22" },
-    cannot_reach:   { label: "Cannot Reach",      color: "#d35400" },
+    unavailable:    { label: "Unavailable",       color: "#c0392b" },
+    fuel:           { label: "Insufficient Fuel",  color: "#8e44ad" },
+    fuel_stop_late: { label: "Fuel Stop Late",     color: "#e67e22" },
+    cannot_reach:   { label: "Cannot Reach",       color: "#d35400" },
+    cascade:        { label: "Cascade Conflict",   color: "#7f8c8d" },
   };
   const { label, color } = map[subtype] || { label: subtype, color: "#888" };
   return <Badge text={label} color={color} />;
 }
 
 function Details({ conflict }) {
-  const { conflict_subtype, not_available_from, not_available_to, earliest_available } = conflict;
+  const { conflict_subtype, not_available_from, not_available_to, earliest_available, blocking_trip_id } = conflict;
 
   if (conflict_subtype === "unavailable") {
     return (
@@ -230,6 +296,13 @@ function Details({ conflict }) {
     return (
       <span style={{ color: "#e67e22", fontSize: "12px", fontWeight: 500 }}>
         Fuel stop required but causes late arrival
+      </span>
+    );
+  }
+  if (conflict_subtype === "cascade") {
+    return (
+      <span style={{ color: "#7f8c8d", fontSize: "12px", fontWeight: 500 }}>
+        Blocked by Trip {blocking_trip_id}
       </span>
     );
   }

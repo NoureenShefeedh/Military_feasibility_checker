@@ -105,12 +105,19 @@ def fetch_trips_for_resolution(plan_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("""
-        SELECT t.trip_id, r.start_location_id
+        SELECT
+            t.trip_id,
+            r.start_location_id,
+            r.end_location_id,
+            t.duration
         FROM trips t
         JOIN routes r ON r.route_id = t.route_id
         WHERE t.plan_id = %s
     """, (plan_id,))
     trip_rows = cur.fetchall()
+
+    def time_to_secs(t):
+        return t.hour * 3600 + t.minute * 60 + t.second
 
     trips = []
     for row in trip_rows:
@@ -125,6 +132,8 @@ def fetch_trips_for_resolution(plan_id):
         trips.append({
             "trip_id":           row[0],
             "start_location_id": row[1],
+            "end_location_id":   row[2],
+            "duration_secs":     time_to_secs(row[3]),
             "crew": [
                 {"individual_id": c[0], "name": c[1], "current_location_id": c[2]}
                 for c in crew
