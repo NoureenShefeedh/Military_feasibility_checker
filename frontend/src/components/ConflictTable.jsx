@@ -67,12 +67,12 @@ export default function ConflictTable({ conflicts, resolutions }) {
                       }
                     </td>
                     <td style={tdStyle}>
-                      <TypeMatchBadge resolution={r} />
+                      <TypeMatchBadge resolution={r} resolutionType={r.resolution_type}/>
                     </td>
                   </tr>
 
                   {/* Inline round trip schedule — only renders when rounds exist */}
-                  <RoundsTable rounds={r.rounds} />
+                  <RoundsTable rounds={r.rounds} resolutionType={r.resolution_type} />
                 </React.Fragment>
               ))}
             </tbody>
@@ -124,73 +124,106 @@ export default function ConflictTable({ conflicts, resolutions }) {
   );
 }
 
-function RoundsTable({ rounds }) {
-  if (!rounds || rounds.length === 0) return null;
+function RoundsTable({ rounds, resolutionType }) {
+  if (!rounds) return null;
+
+  // ── combo round trips: rounds is a dict keyed by vehicle number ──
+  if (resolutionType === "multi_vehicle_combo_round_trips") {
+    return (
+      <>
+        {Object.entries(rounds).map(([vn, vdata]) => (
+          <tr key={vn}>
+            <td colSpan={5} style={{ padding: "0 14px 14px 14px", background: "#f4f8ff" }}>
+              <div style={{
+                border: "1px solid #c8ddf5", borderRadius: "6px",
+                overflow: "hidden", marginTop: "4px"
+              }}>
+                <div style={{
+                  padding: "8px 14px", background: "#e8f0fb",
+                  fontSize: "11px", fontWeight: 700, letterSpacing: "0.8px",
+                  textTransform: "uppercase", color: "#1a6eb5"
+                }}>
+                  {vn} — Round Trip Schedule
+                  <span style={{ fontWeight: 400, marginLeft: "8px", color: "#555" }}>
+                    (Share: {vdata.load_share?.toLocaleString()} kg,
+                    Fuel: {vdata.fuel_cost} L)
+                  </span>
+                </div>
+                <RoundsRows rounds={vdata.rounds} />
+              </div>
+            </td>
+          </tr>
+        ))}
+      </>
+    );
+  }
+
+  // ── single vehicle round trips: rounds is an array ──
+  if (!Array.isArray(rounds) || rounds.length === 0) return null;
 
   return (
     <tr>
       <td colSpan={5} style={{ padding: "0 14px 14px 14px", background: "#f4f8ff" }}>
         <div style={{
-          border: "1px solid #c8ddf5",
-          borderRadius: "6px",
-          overflow: "hidden",
-          marginTop: "4px"
+          border: "1px solid #c8ddf5", borderRadius: "6px",
+          overflow: "hidden", marginTop: "4px"
         }}>
           <div style={{
-            padding: "8px 14px",
-            background: "#e8f0fb",
-            fontSize: "11px",
-            fontWeight: 700,
-            letterSpacing: "0.8px",
-            textTransform: "uppercase",
-            color: "#1a6eb5"
+            padding: "8px 14px", background: "#e8f0fb",
+            fontSize: "11px", fontWeight: 700, letterSpacing: "0.8px",
+            textTransform: "uppercase", color: "#1a6eb5"
           }}>
             Round Trip Schedule
           </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-            <thead>
-              <tr style={{ background: "#f0f5fd" }}>
-                {["Round", "Load (kg)", "Depart", "Arrive", "Note"].map(h => (
-                  <th key={h} style={{
-                    padding: "7px 12px", textAlign: "left",
-                    color: "#555", fontWeight: 600,
-                    borderBottom: "1px solid #d0e2f5"
-                  }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rounds.map((r, i) => (
-                <tr key={i} style={{
-                  borderBottom: i < rounds.length - 1 ? "1px solid #e8f0fb" : "none",
-                  background: i % 2 === 0 ? "#fff" : "#f9fbff"
-                }}>
-                  <td style={{ padding: "7px 12px", fontWeight: 700, color: "#1a6eb5" }}>
-                    #{r.round}
-                  </td>
-                  <td style={{ padding: "7px 12px", color: "#444" }}>
-                    {r.load?.toLocaleString()}
-                  </td>
-                  <td style={{ padding: "7px 12px", color: "#444" }}>
-                    {fmt(r.depart_start)}
-                  </td>
-                  <td style={{ padding: "7px 12px", color: "#444" }}>
-                    {fmt(r.arrive_end)}
-                  </td>
-                  <td style={{ padding: "7px 12px", color: "#e67e22", fontSize: "11px", fontWeight: 500 }}>
-                    {r.refuel_note || "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <RoundsRows rounds={rounds} />
         </div>
       </td>
     </tr>
   );
 }
 
-function TypeMatchBadge({ resolution }) {
+function RoundsRows({ rounds }) {
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+      <thead>
+        <tr style={{ background: "#f0f5fd" }}>
+          {["Round", "Load (kg)", "Depart", "Arrive", "Note"].map(h => (
+            <th key={h} style={{
+              padding: "7px 12px", textAlign: "left",
+              color: "#555", fontWeight: 600,
+              borderBottom: "1px solid #d0e2f5"
+            }}>{h}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {rounds.map((r, i) => (
+          <tr key={i} style={{
+            borderBottom: i < rounds.length - 1 ? "1px solid #e8f0fb" : "none",
+            background: i % 2 === 0 ? "#fff" : "#f9fbff"
+          }}>
+            <td style={{ padding: "7px 12px", fontWeight: 700, color: "#1a6eb5" }}>
+              #{r.round}
+            </td>
+            <td style={{ padding: "7px 12px", color: "#444" }}>
+              {r.load?.toLocaleString()}
+            </td>
+            <td style={{ padding: "7px 12px", color: "#444" }}>
+              {fmt(r.depart_start)}
+            </td>
+            <td style={{ padding: "7px 12px", color: "#444" }}>
+              {fmt(r.arrive_end)}
+            </td>
+            <td style={{ padding: "7px 12px", color: "#e67e22", fontSize: "11px", fontWeight: 500 }}>
+              {r.refuel_note || "—"}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+function TypeMatchBadge({ resolution, resolutionType }) {
   const { resolution_type, split, conflict_type } = resolution;
 
   if (conflict_type === "Individual") {
@@ -208,6 +241,9 @@ function TypeMatchBadge({ resolution }) {
   if (resolution_type === "single_vehicle_round_trips") {
     return <Badge text="Round Trips ↺" color="#1a6eb5" />;
   }
+  if (resolution_type === "multi_vehicle_combo_round_trips") {
+  return <Badge text="Combo Round Trips ↺" color="#8e44ad" />;
+}
   return <Badge text="—" color="#888" />;
 }
 

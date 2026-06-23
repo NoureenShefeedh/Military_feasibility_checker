@@ -1,4 +1,3 @@
-from curses import window
 from datetime import datetime, timedelta
 from db import get_connection
 

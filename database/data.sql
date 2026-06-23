@@ -263,3 +263,116 @@ WHERE location_id = 2;
 UPDATE locations
 SET has_fuel_station = TRUE
 WHERE location_id = 3;
+
+INSERT INTO vehicles (vehicle_number, vehicle_name, vehicle_type_id, current_fuel_level, current_location_id, unit_id)
+VALUES ('V-200', 'Test8-FuelEmpty', 1, 5.0, 1, 1);
+
+INSERT INTO vehicles (vehicle_number, vehicle_name, vehicle_type_id, current_fuel_level, current_location_id, unit_id)
+VALUES ('V-201', 'Test9-FuelDetour', 3, 20.0, 1, 1);
+
+INSERT INTO vehicles (vehicle_number, vehicle_name, vehicle_type_id, current_fuel_level, current_location_id, unit_id)
+VALUES ('V-202', 'Test10-WrongLoc', 1, 100.0, 3, 1);
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to)
+VALUES ('V-202', 'Blocked during travel window', '2026-07-06 07:45:00', '2026-07-06 08:00:00');
+
+INSERT INTO vehicles (vehicle_number, vehicle_name, vehicle_type_id, current_fuel_level, current_location_id, unit_id)
+VALUES ('V-205', 'Test19-ZeroFuel', 2, 0.0, 2, 1);
+
+INSERT INTO vehicles (vehicle_number, vehicle_name, vehicle_type_id, current_fuel_level, current_location_id, unit_id)
+VALUES ('V-203', 'Test20-FuelExact', 1, 8.4, 1, 1);
+
+INSERT INTO vehicles (vehicle_number, vehicle_name, vehicle_type_id, current_fuel_level, current_location_id, unit_id)
+VALUES ('V-204', 'Test21-FuelBelow', 1, 8.3, 1, 1);
+
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
+('V-200', 'Reserved', '2026-06-24 00:00:00', '2026-06-24 23:59:00'),
+('V-200', 'Reserved', '2026-06-25 00:00:00', '2026-06-25 23:59:00'),
+('V-200', 'Reserved', '2026-06-26 00:00:00', '2026-06-26 23:59:00'),
+('V-200', 'Reserved', '2026-06-27 00:00:00', '2026-06-27 23:59:00'),
+('V-200', 'Reserved', '2026-06-30 00:00:00', '2026-06-30 23:59:00'),
+('V-200', 'Reserved', '2026-07-02 00:00:00', '2026-07-02 23:59:00'),
+('V-200', 'Reserved', '2026-07-03 00:00:00', '2026-07-03 23:59:00');
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
+('V-201', 'Reserved', '2026-06-24 00:00:00', '2026-06-24 23:59:00'),
+('V-201', 'Reserved', '2026-06-25 00:00:00', '2026-06-25 23:59:00'),
+('V-201', 'Reserved', '2026-06-26 00:00:00', '2026-06-26 23:59:00'),
+('V-201', 'Reserved', '2026-06-27 00:00:00', '2026-06-27 23:59:00'),
+('V-201', 'Reserved', '2026-06-30 00:00:00', '2026-06-30 23:59:00'),
+('V-201', 'Reserved', '2026-07-02 00:00:00', '2026-07-02 23:59:00'),
+('V-201', 'Reserved', '2026-07-03 00:00:00', '2026-07-03 23:59:00');
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
+('V-202', 'Reserved', '2026-06-24 00:00:00', '2026-06-24 23:59:00'),
+('V-202', 'Reserved', '2026-06-25 00:00:00', '2026-06-25 23:59:00'),
+('V-202', 'Reserved', '2026-06-26 00:00:00', '2026-06-26 23:59:00'),
+('V-202', 'Reserved', '2026-06-27 00:00:00', '2026-06-27 23:59:00'),
+('V-202', 'Reserved', '2026-06-30 00:00:00', '2026-06-30 23:59:00'),
+('V-202', 'Reserved', '2026-07-02 00:00:00', '2026-07-02 23:59:00'),
+('V-202', 'Reserved', '2026-07-03 00:00:00', '2026-07-03 23:59:00');
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
+('V-203', 'Reserved', '2026-06-24 00:00:00', '2026-06-24 23:59:00'),
+('V-203', 'Reserved', '2026-06-25 00:00:00', '2026-06-25 23:59:00'),
+('V-203', 'Reserved', '2026-06-26 00:00:00', '2026-06-26 23:59:00'),
+('V-203', 'Reserved', '2026-06-27 00:00:00', '2026-06-27 23:59:00'),
+('V-203', 'Reserved', '2026-06-30 00:00:00', '2026-06-30 23:59:00'),
+('V-203', 'Reserved', '2026-07-02 00:00:00', '2026-07-02 23:59:00'),
+('V-203', 'Reserved', '2026-07-03 00:00:00', '2026-07-03 23:59:00');
+
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
+('V-204', 'Reserved', '2026-06-24 00:00:00', '2026-06-24 23:59:00'),
+('V-204', 'Reserved', '2026-06-25 00:00:00', '2026-06-25 23:59:00'),
+('V-204', 'Reserved', '2026-06-26 00:00:00', '2026-06-26 23:59:00'),
+('V-204', 'Reserved', '2026-06-27 00:00:00', '2026-06-27 23:59:00'),
+('V-204', 'Reserved', '2026-06-30 00:00:00', '2026-06-30 23:59:00'),
+('V-204', 'Reserved', '2026-07-02 00:00:00', '2026-07-02 23:59:00'),
+('V-204', 'Reserved', '2026-07-03 00:00:00', '2026-07-03 23:59:00');
+
+
+INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
+('V-205', 'Reserved', '2026-06-24 00:00:00', '2026-06-24 23:59:00'),
+('V-205', 'Reserved', '2026-06-25 00:00:00', '2026-06-25 23:59:00'),
+('V-205', 'Reserved', '2026-06-26 00:00:00', '2026-06-26 23:59:00'),
+('V-205', 'Reserved', '2026-06-27 00:00:00', '2026-06-27 23:59:00'),
+('V-205', 'Reserved', '2026-06-30 00:00:00', '2026-06-30 23:59:00'),
+('V-205', 'Reserved', '2026-07-02 00:00:00', '2026-07-02 23:59:00'),
+('V-205', 'Reserved', '2026-07-03 00:00:00', '2026-07-03 23:59:00');
+
+
+INSERT INTO plans (plan_name, num_of_vehicles, default_start_time, total_fuel)
+VALUES ('Fuel Conflict Tests Plan', 5, '08:00:00', 0);
+
+INSERT INTO trips (plan_id, vehicle_number, route_id, load_type_id, start_offset, duration, quantity_of_load, unit_id) VALUES
+-- Test 8:  V-200, A→B (route 1), fuel=5L → conflict
+(3, 'V-200', 1, 1, '00:00:00', '01:30:00', 5, 1),
+-- Test 9:  V-201, A→C (route 5), fuel=20L → detour via B → no conflict
+(3, 'V-201', 5, 3, '00:05:00', '02:30:00', 2, 1),
+-- Test 19: V-205, B→C (route 3), fuel=0L, at B which has station → no conflict
+(3, 'V-205', 3, 2, '00:05:00', '01:00:00', 3, 1),
+-- Test 20: V-203, A→B (route 1), fuel=8.4L → exactly at threshold → no conflict
+(3, 'V-203', 1, 1, '00:00:00', '01:30:00', 5, 1),
+-- Test 21: V-204, A→B (route 1), fuel=8.3L → just below → conflict
+(3, 'V-204', 1, 1, '00:00:00', '01:30:00', 5, 1);
+
+INSERT INTO plans (plan_name, num_of_vehicles, default_start_time, total_fuel)
+VALUES ('Reachability Tests Plan', 2, '08:00:00', 0);
+
+INSERT INTO trips (plan_id, vehicle_number, route_id, load_type_id, start_offset, duration, quantity_of_load, unit_id)
+VALUES (4, 'V-202', 1, 1, '00:00:00', '01:30:00', 5, 1);
+INSERT INTO trips (plan_id, vehicle_number, route_id, load_type_id, start_offset, duration, quantity_of_load, unit_id)
+VALUES (4, 'V-103', 5, 3, '00:05:00', '02:30:00', 2, 1);
+
+INSERT INTO trip_crew (trip_id, individual_id)
+VALUES (
+    (SELECT trip_id FROM trips WHERE plan_id = 4 AND vehicle_number = 'V-103'),
+    3   -- Ali, current_location_id=3 (Loc C)
+);
+
+INSERT INTO individual_availability (individual_id, reason, not_available_from, not_available_to)
+VALUES (3, 'Blocked during travel window', '2026-07-06 07:37:00', '2026-07-06 08:00:00');
+
+UPDATE vehicles SET current_location_id = 3 WHERE vehicle_number = 'V-200';
