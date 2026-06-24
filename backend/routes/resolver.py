@@ -9,6 +9,218 @@ from routes.feasible import (
 )
 
 
+# ─────────────────────────────────────────────
+# PRIORITY HELPERS
+# ─────────────────────────────────────────────
+
+# Maps priority strings to numeric ranks so they can be compared with < / >.
+# Higher number = higher priority.
+PRIORITY_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+
+def parse_plan_name_from_reason(reason):
+    """
+    Extract the plan name from a reason string of the form:
+        "Assigned to <Plan Name>"
+
+    Returns the plan name string, or None if the reason doesn't match
+    the expected format.
+    """
+    # No reason text at all -> nothing to parse.
+    if not reason:
+        return None
+    prefix = "Assigned to "
+    # Only treat it as a "plan assignment" reason if it starts with the expected prefix.
+    if reason.startswith(prefix):
+        # Strip the prefix and any stray whitespace to get just the plan name.
+        return reason[len(prefix):].strip()
+    return None
+
+
+def fetch_plan_priority(plan_name):
+    """
+    Look up the priority of a plan by its name.
+
+    Returns the priority string ('low', 'medium', 'high') or None if
+    the plan is not found.
+    """
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT priority FROM plans WHERE plan_name = %s",
+        (plan_name,)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    # Convert to str in case the DB driver returns something else (e.g. an Enum).
+    return str(row[0]) if row else None
+
+
+def fetch_current_plan_priority(plan_id):
+    """
+    Look up the priority of the current plan by its ID.
+
+    Returns the priority string ('low', 'medium', 'high') or None.
+    """
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute(
+        "SELECT priority FROM plans WHERE plan_id = %s",
+        (plan_id,)
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return str(row[0]) if row else None
+
+
+def is_poachable_from_lower_priority(reason, not_available_from, current_plan_priority):
+    """
+    Determine whether a resource blocked by an 'Assigned to <Plan>' reason
+    can be poached because:
+
+    1. The reason string matches the "Assigned to <Plan Name>" format.
+    2. The blocking plan's priority is STRICTLY lower than the current plan.
+    3. The blocking assignment has not yet started (not_available_from > now).
+
+    Parameters
+    ----------
+    reason                 : str      – The unavailability reason string.
+    not_available_from     : datetime – When the blocking assignment starts.
+    current_plan_priority  : str      – Priority of the plan being resolved.
+
+    Returns
+    -------
+    (poachable: bool, blocking_plan_name: str or None)
+    """
+    # Step 1: confirm this unavailability is actually caused by another plan assignment.
+    plan_name = parse_plan_name_from_reason(reason)
+    if not plan_name:
+        return False, None
+
+    # Step 2: find out how important that other ("blocking") plan is.
+    blocking_priority = fetch_plan_priority(plan_name)
+    if not blocking_priority:
+        # Couldn't find the blocking plan in the DB -> be safe and don't poach.
+        return False, None
+
+    # Convert both priorities to numeric ranks for comparison.
+    # Unknown priority strings default to -1 (lowest possible), keeping comparisons safe.
+    current_rank  = PRIORITY_ORDER.get(current_plan_priority, -1)
+    blocking_rank = PRIORITY_ORDER.get(blocking_priority, -1)
+
+    if current_rank <= blocking_rank:
+        # Current plan is not strictly higher priority — cannot poach.
+        return False, None
+
+    # Step 3: only allow poaching if the blocking assignment hasn't started yet.
+    # (We don't want to rip a resource away from a trip that's already underway.)
+    now = datetime.now()
+    naf = not_available_from.replace(tzinfo=None) if not_available_from.tzinfo else not_available_from
+    if naf <= now:
+        # Already started — cannot poach.
+        return False, None
+
+    return True, plan_name
+
+
+def check_vehicle_poachable(
+    vehicle_number, conflict_avail_windows, current_plan_priority,
+    conflict_start, conflict_end
+):
+    """
+    Check whether the conflicting vehicle itself is poachable — i.e. the
+    SPECIFIC unavailability window that is actually causing THIS conflict
+    (the one overlapping [conflict_start, conflict_end)) is an assignment
+    to a lower-priority plan that hasn't started yet.
+
+    IMPORTANT: a vehicle can have many unrelated unavailability windows
+    (e.g. "Maintenance" right now, and a completely separate future
+    "Assigned to <Plan>" window weeks later). We must only look at the
+    window that actually overlaps the current conflict's time range —
+    otherwise an unrelated future assignment could incorrectly be reported
+    as the reason this vehicle is "poachable", even though it has nothing
+    to do with why the trip is conflicting right now.
+
+    Parameters
+    ----------
+    vehicle_number          : str       – The vehicle in conflict.
+    conflict_avail_windows  : list       – All (not_from, not_to, reason) windows for this vehicle.
+    current_plan_priority   : str        – Priority of the plan being resolved.
+    conflict_start          : datetime   – Start of the window causing THIS conflict (actual_start).
+    conflict_end            : datetime   – End of the window causing THIS conflict (actual_end).
+
+    Returns
+    -------
+    (poachable: bool, blocking_plan_name: str or None)
+    """
+    for not_from, not_to, reason in conflict_avail_windows:
+        # Skip windows that don't actually overlap the time range causing
+        # this specific conflict — they're unrelated to why this trip failed.
+        if not (not_from < conflict_end and not_to > conflict_start):
+            continue
+        poachable, plan_name = is_poachable_from_lower_priority(
+            reason, not_from, current_plan_priority
+        )
+        if poachable:
+            return True, plan_name
+    return False, None
+
+
+def check_individual_poachable(individual_name, trip_crew, current_plan_priority, conflict_start, conflict_end):
+    """
+    Check whether the conflicting individual is poachable from a lower-priority
+    plan.
+
+    Looks up the individual's availability windows and checks ONLY the
+    window that actually overlaps [conflict_start, conflict_end) — i.e. the
+    one actually causing this specific conflict — for a lower-priority plan
+    assignment that hasn't started. Unrelated windows (a different reason,
+    or a different time period entirely) are ignored, so an unconnected
+    future "Assigned to <Plan>" record can't be mistaken for the reason
+    this person is unavailable right now.
+
+    Returns
+    -------
+    (poachable: bool, blocking_plan_name: str or None, individual_id: int or None)
+    """
+    # Find the individual_id from the crew list (we only have the name here).
+    individual_id = next(
+        (c["individual_id"] for c in trip_crew if c["name"] == individual_name),
+        None
+    )
+    if individual_id is None:
+        # Can't find this person in the crew list — nothing to poach.
+        return False, None, None
+
+    # Pull every unavailability record for this individual from the DB.
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT not_available_from, not_available_to, reason
+        FROM individual_availability WHERE individual_id = %s
+    """, (individual_id,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    # Check only the window(s) that actually overlap THIS conflict's window.
+    for not_from, not_to, reason in rows:
+        # Normalize to naive datetime (strip timezone) before comparing.
+        nf = not_from.replace(tzinfo=None) if not_from.tzinfo else not_from
+        nt = not_to.replace(tzinfo=None) if not_to.tzinfo else not_to
+        if not (nf < conflict_end and nt > conflict_start):
+            # This window has nothing to do with why the person is
+            # unavailable for THIS trip — skip it.
+            continue
+        poachable, plan_name = is_poachable_from_lower_priority(
+            reason, nf, current_plan_priority
+        )
+        if poachable:
+            return True, plan_name, individual_id
+
+    return False, None, individual_id
 
 
 # ─────────────────────────────────────────────
@@ -39,10 +251,12 @@ def fetch_plan_assigned_resources(plan_id, conflict_start, conflict_end, base_t0
     conn = get_connection()
     cur  = conn.cursor()
 
+    # Helper: convert a TIME value (offset/duration) into total seconds,
+    # so it can be added to base_t0 as a timedelta.
     def to_secs(t):
         return t.hour * 3600 + t.minute * 60 + t.second
 
-    # Check each trip in the plan and record vehicles whose window overlaps.
+    # ---- Find vehicles already busy on another trip within this plan ----
     cur.execute("""
         SELECT vehicle_number, start_offset, duration
         FROM trips WHERE plan_id = %s
@@ -51,13 +265,16 @@ def fetch_plan_assigned_resources(plan_id, conflict_start, conflict_end, base_t0
 
     busy_vehicles = set()
     for vn, offset, dur in rows:
+        # Reconstruct each trip's actual start/end time from the plan's base_t0
+        # plus its stored offset/duration.
         trip_start = base_t0 + timedelta(seconds=to_secs(offset))
         trip_end   = trip_start + timedelta(seconds=to_secs(dur))
-        # Standard interval overlap: [a,b) overlaps [c,d) iff a<d and b>c
+        # Standard interval-overlap check: trips overlap if one starts before
+        # the other ends, in both directions.
         if trip_start < conflict_end and trip_end > conflict_start:
             busy_vehicles.add(vn)
 
-    # Same overlap check for individuals via trip_crew join.
+    # ---- Find individuals already busy on another trip within this plan ----
     cur.execute("""
         SELECT tc.individual_id, t.start_offset, t.duration
         FROM trip_crew tc
@@ -93,10 +310,12 @@ def fetch_same_type_vehicles(vehicle_number, exclude_numbers):
     """
     conn = get_connection()
     cur  = conn.cursor()
+    # Postgres "= ALL(%s)" needs a non-empty array; substitute a dummy value
+    # if there's nothing to exclude.
     exclude_list = list(exclude_numbers) if exclude_numbers else ['__none__']
 
-    # Subquery finds the vehicle_type_id of the original vehicle, then returns
-    # all other vehicles of that same type that aren't excluded.
+    # Find all vehicles that share the SAME vehicle_type_id as the original
+    # vehicle, excluding the original itself and anything already excluded.
     cur.execute("""
         SELECT
             v.vehicle_number, v.vehicle_name, v.current_location_id,
@@ -118,7 +337,7 @@ def fetch_same_type_vehicles(vehicle_number, exclude_numbers):
         cur.close(); conn.close()
         return []
 
-    # Batch-load availability windows for all candidate vehicles at once.
+    # Batch-fetch availability windows for ALL candidates at once (avoids N+1 queries).
     cur.execute("""
         SELECT vehicle_number, not_available_from, not_available_to, reason
         FROM vehicle_availability WHERE vehicle_number = ANY(%s)
@@ -126,8 +345,7 @@ def fetch_same_type_vehicles(vehicle_number, exclude_numbers):
     avail_rows = cur.fetchall()
     cur.close(); conn.close()
 
-    # Build a lookup: vehicle_number → list of (not_from, not_to, reason) tuples.
-    # Strip timezone info to keep comparisons naive throughout.
+    # Group availability rows by vehicle_number into a lookup dict.
     avail_map = {}
     for r in avail_rows:
         avail_map.setdefault(r[0], []).append((
@@ -136,6 +354,8 @@ def fetch_same_type_vehicles(vehicle_number, exclude_numbers):
             r[3]
         ))
 
+    # Build the final list of candidate dicts, attaching each vehicle's
+    # availability windows from the lookup dict above.
     return [{
         "vehicle_number": r[0], "vehicle_name": r[1],
         "current_location": r[2], "speed": float(r[3]),
@@ -160,6 +380,7 @@ def fetch_all_vehicles_except(exclude_numbers):
     cur  = conn.cursor()
     exclude_list = list(exclude_numbers) if exclude_numbers else ['__none__']
 
+    # No vehicle_type filtering here — we want the WHOLE fleet (minus exclusions).
     cur.execute("""
         SELECT
             v.vehicle_number, v.vehicle_name, v.current_location_id,
@@ -175,7 +396,6 @@ def fetch_all_vehicles_except(exclude_numbers):
         cur.close(); conn.close()
         return []
 
-    # Batch-load availability windows.
     cur.execute("""
         SELECT vehicle_number, not_available_from, not_available_to, reason
         FROM vehicle_availability WHERE vehicle_number = ANY(%s)
@@ -206,8 +426,6 @@ def fetch_trip_actual_load(trip_id):
         actual_load = quantity_of_load × weight_per_unit (from load_types table)
 
     Returns 0.0 if the trip has no load or the data is missing.
-    Used to determine whether a replacement vehicle (or combo) has
-    sufficient capacity to carry the original trip's cargo.
     """
     conn = get_connection()
     cur  = conn.cursor()
@@ -219,6 +437,7 @@ def fetch_trip_actual_load(trip_id):
     """, (trip_id,))
     row = cur.fetchone()
     cur.close(); conn.close()
+    # Guard against missing trip/load-type data or NULL quantity/weight.
     if not row or row[0] is None or row[1] is None:
         return 0.0
     return float(row[0]) * float(row[1])
@@ -235,10 +454,10 @@ def fetch_same_type_individuals(individual_id, exclude_ids):
     """
     conn = get_connection()
     cur  = conn.cursor()
+    # Use an out-of-range dummy ID (-1) when there's nothing to exclude.
     exclude_list = list(exclude_ids) if exclude_ids else [-1]
 
-    # Subquery finds the crew_type_id of the original individual, then
-    # returns all others of that type who aren't excluded.
+    # Find individuals with the SAME crew_type_id as the original individual.
     cur.execute("""
         SELECT i.individual_id, i.name, i.current_location_id, ct.crew_type_name
         FROM individuals i
@@ -255,7 +474,7 @@ def fetch_same_type_individuals(individual_id, exclude_ids):
         cur.close(); conn.close()
         return []
 
-    # Batch-load availability windows for all candidates.
+    # Batch-fetch availability for all candidates at once.
     cur.execute("""
         SELECT individual_id, not_available_from, not_available_to, reason
         FROM individual_availability WHERE individual_id = ANY(%s)
@@ -290,15 +509,14 @@ def is_vehicle_available_reachable_fuelled(
     Gate check: returns True only if the candidate vehicle passes ALL three
     conditions needed to be a valid replacement:
 
-    1. Availability  — not marked unavailable during [base_t0, actual_end).
+    1. Availability  — not marked unavailable during [actual_start, actual_end).
     2. Fuel          — has enough fuel (or can refuel) to reach the trip start.
     3. Reachability  — can travel from its current location to trip_start_loc
                        in time, without its travel window hitting an unavailability.
 
-    Uses base_t0 (not actual_start) as the window start so that the check
-    covers any pre-trip travel/refuel time the vehicle needs.
-
-    Returns False on any failure; True only if all three pass.
+    All checks are anchored on actual_start (this trip's own real start
+    time), not base_t0 (the plan's zero-point) — we only care whether the
+    vehicle can be in place and free for THIS trip, not for the whole plan.
     """
     avail_windows    = candidate["avail_windows"]
     current_loc      = candidate["current_location"]
@@ -307,35 +525,45 @@ def is_vehicle_available_reachable_fuelled(
     fuel_capacity    = candidate["fuel_capacity"]
     consumption_rate = candidate["fuel_consumption_rate"]
 
-    # ── Check 1: availability during the full trip window ──
-    conflict, _ = overlaps_availability(base_t0, actual_end, avail_windows)
+    # --- Condition 1: Availability ---
+    # The candidate must be free for the trip's own actual window —
+    # actual_start (this trip's real start) through actual_end (trip finish).
+    conflict, _ = overlaps_availability(actual_start, actual_end, avail_windows)
     if conflict:
         return False
 
-    # ── Check 2: fuel (delegates to shared fuel check logic) ──
+    # --- Condition 2: Fuel ---
+    # Delegate to the shared fuel-check helper (handles direct-fuel,
+    # on-site refuel, and detour-to-station cases).
     fuel_conflict = check_vehicle_fuel(
         current_loc, trip_start_loc, end_loc,
         current_fuel, fuel_capacity, consumption_rate,
-        speed, base_t0, actual_start, actual_end,
+        speed, actual_start, actual_start, actual_end,
         candidate["vehicle_number"], avail_windows
     )
     if fuel_conflict:
         return False
 
-    # ── Check 3: can the vehicle physically reach the start location? ──
+    # --- Condition 3: Reachability ---
+    # If the vehicle is already at the trip's start location, no travel is needed.
     if current_loc == trip_start_loc:
-        return True  # already there, no travel needed
+        return True
 
     dist = fetch_distance(current_loc, trip_start_loc)
     if dist is None:
-        return False  # no route exists
+        # No known route between these locations -> can't reach the trip.
+        return False
     if dist == 0:
-        return True   # co-located
+        return True
 
-    # Work backwards: must depart by base_t0 minus travel time.
+    # Work out how long the trip to "get there" would take, then check that
+    # the vehicle isn't unavailable during that travel window.
+    # Anchored on actual_start (not base_t0) — we only care whether the
+    # vehicle can physically reach the trip in time for THIS trip's own
+    # start, not the plan's overall zero-point.
     travel_secs = travel_time_secs(dist, speed)
-    depart_time = base_t0 - timedelta(seconds=travel_secs)
-    conflict, _ = overlaps_availability(depart_time, base_t0, avail_windows)
+    depart_time = actual_start - timedelta(seconds=travel_secs)
+    conflict, _ = overlaps_availability(depart_time, actual_start, avail_windows)
     return not conflict
 
 
@@ -345,21 +573,21 @@ def is_individual_available_reachable(
     """
     Gate check for a crew member replacement: returns True only if:
 
-    1. Availability  — not unavailable during [base_t0, actual_end).
-    2. Reachability  — can travel from current location to trip_start_loc
-                       in time (individuals have no fuel constraint).
+    1. Availability  — not unavailable during [actual_start, actual_end).
+    2. Reachability  — can travel from current location to trip_start_loc in time.
 
-    Returns False on any failure; True only if both pass.
+    Both checks are anchored on actual_start (this trip's own real start
+    time), not base_t0 (the plan's zero-point).
     """
     avail_windows = candidate["avail_windows"]
     current_loc   = candidate["current_location"]
 
-    # ── Check 1: availability ──
-    conflict, _ = overlaps_availability(base_t0, actual_end, avail_windows)
+    # --- Condition 1: Availability ---
+    conflict, _ = overlaps_availability(actual_start, actual_end, avail_windows)
     if conflict:
         return False
 
-    # ── Check 2: reachability ──
+    # --- Condition 2: Reachability ---
     if current_loc == trip_start_loc:
         return True
 
@@ -369,9 +597,11 @@ def is_individual_available_reachable(
     if dist == 0:
         return True
 
+    # Individuals travel at a fixed walking/commute speed (not vehicle speed).
+    # Anchored on actual_start (not base_t0) — same reasoning as the vehicle check.
     travel_secs = travel_time_secs(dist, INDIVIDUAL_SPEED_KMH)
-    depart_time = base_t0 - timedelta(seconds=travel_secs)
-    conflict, _ = overlaps_availability(depart_time, base_t0, avail_windows)
+    depart_time = actual_start - timedelta(seconds=travel_secs)
+    conflict, _ = overlaps_availability(depart_time, actual_start, avail_windows)
     return not conflict
 
 
@@ -385,36 +615,31 @@ def compute_vehicle_fuel_cost(
 ):
     """
     Estimate the total fuel a candidate vehicle will consume to complete
-    the trip, including the deadhead (positioning) leg from its current
-    location to the trip's start location.
-
-    The function also accounts for whether a refuel stop is needed:
-    - If current fuel is sufficient (with a 100 km buffer) → just charge
-      the full trip distance.
-    - If at a fuel station already → charge full trip distance (refuel assumed).
-    - If a detour to a station is needed → charge detour distance + trip distance.
-    - If no reachable station exists → return infinity (infeasible).
-
-    Returns
-    -------
-    float – Estimated fuel units consumed. float("inf") if infeasible.
+    the trip, including the deadhead leg from its current location to
+    the trip's start location.
     """
+    # "Deadhead" leg: travelling empty from current location to the trip start.
     dist_to_start  = fetch_distance(current_loc, start_loc) or 0.0
+    # The actual trip leg itself, start -> end.
     dist_start_end = fetch_distance(start_loc, end_loc)     or 0.0
     fuel_to_start  = fuel_needed(dist_to_start, consumption_rate)
-    # 100 km buffer ensures there's a safety margin after reaching the start.
+    # Safety buffer: require enough fuel for an extra 100km beyond what's
+    # strictly needed, so the vehicle isn't left stranded with zero margin.
     buffer_fuel    = fuel_needed(100.0, consumption_rate)
     total_dist     = dist_to_start + dist_start_end
 
-    # ── Case 1: enough fuel including the safety buffer ──
+    # Case A: vehicle already has enough fuel (plus buffer) to reach the
+    # start point without needing to refuel at all.
     if current_fuel >= fuel_to_start + buffer_fuel:
         return fuel_needed(total_dist, consumption_rate)
 
-    # ── Case 2: current location has a fuel station → refuel there ──
+    # Case B: not enough fuel, but there's a fuel station right at the
+    # vehicle's current location — it can simply top up before departing.
     if fetch_location_has_fuel(current_loc):
         return fuel_needed(total_dist, consumption_rate)
 
-    # ── Case 3: must detour to a fuel station ──
+    # Case C: no fuel on-site — search for the best detour to a fuel station
+    # along the way that the vehicle can actually reach and refuel at.
     fuel_stations    = fetch_fuel_stations()
     best_detour_dist = float("inf")
 
@@ -428,10 +653,11 @@ def compute_vehicle_fuel_cost(
 
         if dist_to_station is None or dist_station_start is None:
             continue
-        # Can we reach the station on current fuel?
+        # Vehicle must have enough fuel to reach the station in the first place.
         if current_fuel < fuel_needed(dist_to_station, consumption_rate):
             continue
-        # After filling up, can we reach start_loc (with buffer)?
+        # After refuelling to full capacity, it must have enough to reach the
+        # trip start with the safety buffer intact.
         if fuel_capacity < (fuel_needed(dist_station_start, consumption_rate) + buffer_fuel):
             continue
 
@@ -440,9 +666,10 @@ def compute_vehicle_fuel_cost(
             best_detour_dist = detour_dist
 
     if best_detour_dist == float("inf"):
-        return float("inf")  # no viable station reachable
+        # No viable fuel station found within reach.
+        return float("inf")
 
-    # Charge: detour to station → start_loc → end_loc
+    # Total fuel = detour to/through the station + the actual trip leg.
     return fuel_needed(best_detour_dist + dist_start_end, consumption_rate)
 
 
@@ -454,7 +681,7 @@ def schedule_round_trips(
     vehicle,
     trip_start_loc,
     trip_end_loc,
-    trip_duration_secs,   # DB duration for the forward leg (travel + unloading)
+    trip_duration_secs,
     total_load,
     first_round_start,
     avail_windows
@@ -463,76 +690,54 @@ def schedule_round_trips(
     Schedule one vehicle to make multiple round trips between trip_start_loc
     and trip_end_loc in order to carry a total load that exceeds its single
     capacity.
-
-    Each round consists of:
-      A. Optional refuel at (or near) start_loc if fuel is insufficient.
-      B. Forward leg: depart start_loc → arrive end_loc (uses DB trip duration).
-      C. Return leg: drive empty end_loc → start_loc (distance/speed calculation).
-
-    The last round skips C (no need to return after final delivery).
-
-    Parameters
-    ----------
-    vehicle            : dict   – Candidate vehicle dict (post deadhead fuel deduction).
-    trip_start_loc     : int    – Location ID where each round departs from.
-    trip_end_loc       : int    – Location ID where each round delivers to.
-    trip_duration_secs : int    – Seconds for the forward leg (from DB).
-    total_load         : float  – Total cargo weight to deliver.
-    first_round_start  : datetime – Earliest the first round can begin.
-    avail_windows      : list   – Vehicle unavailability windows.
-
-    Returns
-    -------
-    list[dict] – One entry per round with depart/arrive times and refuel notes.
-    None       – If any round cannot be scheduled (conflict or fuel failure).
     """
     speed            = vehicle["speed"]
     consumption_rate = vehicle["fuel_consumption_rate"]
     fuel_capacity    = vehicle["fuel_capacity"]
     max_load         = vehicle["max_load_capacity"]
 
+    # Forward leg (start -> end) and return leg (end -> start) distances.
     dist_forward = fetch_distance(trip_start_loc, trip_end_loc) or 0.0
     dist_return  = fetch_distance(trip_end_loc, trip_start_loc) or 0.0
 
     fuel_per_fwd = fuel_needed(dist_forward, consumption_rate)
     fuel_per_ret = fuel_needed(dist_return,  consumption_rate)
 
-    # Return travel time is pure driving time (no unloading on the way back).
     return_travel_secs = travel_time_secs(dist_return, speed)
     fill_secs          = FUEL_FILL_TIME_MINS * 60
 
-    # How many rounds are needed to move all the load?
+    # How many round trips are needed to move the entire load, given the
+    # vehicle's max capacity per trip.
     rounds_needed = math.ceil(total_load / max_load)
     current_fuel  = vehicle["current_fuel"]
     round_start   = first_round_start
     rounds        = []
 
     for round_num in range(1, rounds_needed + 1):
-        # Remaining load for this round (last round may be a partial load).
+        # How much load this particular round carries (last round may be partial).
         load_this_round = min(max_load, total_load - (round_num - 1) * max_load)
         is_last_round   = (round_num == rounds_needed)
         refuel_note     = None
 
-        # ── Step A: refuel at start_loc if needed before departing ──
-        # We only need enough fuel for the forward leg here; the return
-        # leg fuel check is handled implicitly by the fuel carry-forward.
+        # --- Refuel check before departing on this round, if needed ---
         if current_fuel < fuel_per_fwd:
 
             if fetch_location_has_fuel(trip_start_loc):
-                # Station is right at the start location — no travel needed,
-                # just the fill time.
+                # Refuel right where we are (the trip's start location).
                 refuel_end = round_start + timedelta(seconds=fill_secs)
                 conflict, _ = overlaps_availability(round_start, refuel_end, avail_windows)
                 if conflict:
-                    return None  # unavailable during refuel window
+                    # Vehicle becomes unavailable during the refuel window -> bail out entirely.
+                    return None
 
-                round_start  = refuel_end   # departure shifts forward by fill time
+                round_start  = refuel_end
                 current_fuel = fuel_capacity
                 refuel_note  = "Refuelled at start location before this round"
 
             else:
-                # No station at start — find the nearest reachable station,
-                # drive there and back, then continue with the round.
+                # No fuel at the start location — search for the best detour
+                # to a nearby station (go there, fill up, come back) before
+                # starting this round.
                 fuel_stations    = fetch_fuel_stations()
                 best_station     = None
                 best_detour_secs = float("inf")
@@ -540,21 +745,18 @@ def schedule_round_trips(
                 for station in fuel_stations:
                     sid = station["location_id"]
                     if sid == trip_start_loc:
-                        continue  # already handled above
+                        continue
 
                     dist_to_station   = fetch_distance(trip_start_loc, sid)
                     dist_station_back = fetch_distance(sid, trip_start_loc)
 
                     if dist_to_station is None or dist_station_back is None:
                         continue
-                    # Must have enough fuel to reach the station.
                     if current_fuel < fuel_needed(dist_to_station, consumption_rate):
                         continue
-                    # Full tank must cover the return leg from the station.
                     if fuel_capacity < fuel_needed(dist_station_back, consumption_rate):
                         continue
 
-                    # Total detour: go to station + fill + come back to start_loc.
                     detour_secs = (
                         travel_time_secs(dist_to_station,   speed) +
                         fill_secs +
@@ -565,31 +767,33 @@ def schedule_round_trips(
                         best_station     = station
 
                 if best_station is None:
-                    return None  # no reachable station, round trip impossible
+                    # No reachable station can save this round -> the whole
+                    # round-trip plan fails.
+                    return None
 
                 detour_end = round_start + timedelta(seconds=best_detour_secs)
                 conflict, _ = overlaps_availability(round_start, detour_end, avail_windows)
                 if conflict:
-                    return None  # unavailable during detour window
+                    return None
 
                 round_start  = detour_end
                 current_fuel = fuel_capacity
                 refuel_note  = f"Refuelled at {best_station['location_name']} before this round"
 
-            # Final safety check: even after refuelling, can the tank handle the forward leg?
+            # Even after refuelling to full capacity, if the tank still can't
+            # cover the forward leg, this vehicle simply can't do the job.
             if fuel_capacity < fuel_per_fwd:
                 return None
 
-        # ── Step B: forward leg — depart start_loc, arrive end_loc ──
-        # Uses the DB trip duration (includes travel + unloading time).
+        # --- Depart on the forward leg of this round ---
         depart_time = round_start
         arrive_time = depart_time + timedelta(seconds=trip_duration_secs)
 
         conflict, _ = overlaps_availability(depart_time, arrive_time, avail_windows)
         if conflict:
-            return None  # unavailable during forward leg
+            return None
 
-        current_fuel -= fuel_per_fwd  # deduct fuel for forward leg
+        current_fuel -= fuel_per_fwd
 
         rounds.append({
             "round":        round_num,
@@ -599,24 +803,20 @@ def schedule_round_trips(
             "refuel_note":  refuel_note,
         })
 
-        # Last round: vehicle stays at end_loc, no return leg needed.
         if is_last_round:
+            # No need to schedule a return leg after the final round.
             break
 
-        # ── Step C: return leg — drive empty from end_loc back to start_loc ──
-        # Return duration is calculated from distance/speed (not from DB)
-        # since the return is an unladen repositioning leg, not a planned trip.
+        # --- Return leg back to the start location for the next round ---
         return_depart = arrive_time
         return_arrive = return_depart + timedelta(seconds=return_travel_secs)
 
         conflict, _ = overlaps_availability(return_depart, return_arrive, avail_windows)
         if conflict:
-            return None  # unavailable during return leg
+            return None
 
         current_fuel = max(current_fuel - fuel_per_ret, 0.0)
-
-        # Next round starts immediately once the vehicle is back at start_loc.
-        round_start = return_arrive
+        round_start  = return_arrive
 
     return rounds
 
@@ -630,25 +830,6 @@ def find_best_single_vehicle_round_trips(
     all necessary round trips to deliver the total load.
 
     "Best" is defined as: fewest rounds first, then lowest total fuel cost.
-
-    For each candidate:
-    - Compute deadhead travel time from current location to trip_start_loc.
-    - Deduct deadhead fuel from current fuel.
-    - Pass the adjusted state to schedule_round_trips().
-
-    Parameters
-    ----------
-    candidates        : list[dict] – Pre-filtered available vehicles.
-    trip_start_loc    : int        – Origin of each round.
-    trip_end_loc      : int        – Destination of each round.
-    trip_duration_secs: int        – Forward leg duration (from DB).
-    total_load        : float      – Total cargo to deliver.
-    actual_start      : datetime   – Earliest the first round may begin.
-    avail_windows_map : dict       – vehicle_number → avail_windows list.
-
-    Returns
-    -------
-    (best_vehicle, best_rounds, best_fuel) or (None, None, inf) if none work.
     """
     best_vehicle = None
     best_rounds  = None
@@ -656,19 +837,21 @@ def find_best_single_vehicle_round_trips(
     best_count   = float("inf")
 
     for v in candidates:
-        # Calculate how long it takes to travel from current location to trip start.
+        # Work out the "deadhead" leg: how long/how much fuel it costs the
+        # vehicle to travel from its current location to the trip's start.
         dist_dh = fetch_distance(v["current_location"], trip_start_loc) or 0.0
         dh_secs = travel_time_secs(dist_dh, v["speed"])
         fuel_dh = fuel_needed(dist_dh, v["fuel_consumption_rate"])
 
-        # The vehicle can't start Round 1 until it has arrived at trip_start_loc.
+        # The vehicle can't start its first round until it physically arrives
+        # at the trip's start location (unless it's already there).
         earliest_arrival = actual_start + timedelta(seconds=dh_secs) \
             if v["current_location"] != trip_start_loc else actual_start
         first_start = max(actual_start, earliest_arrival)
 
         avail = avail_windows_map.get(v["vehicle_number"], [])
 
-        # Reduce current fuel by the deadhead cost before passing to scheduler.
+        # Account for fuel burned during the deadhead leg before simulating rounds.
         fuel_after_dh = max(v["current_fuel"] - fuel_dh, 0.0)
         v_copy = dict(v)
         v_copy["current_fuel"] = fuel_after_dh
@@ -679,9 +862,10 @@ def find_best_single_vehicle_round_trips(
             first_start, avail
         )
         if rounds is None:
-            continue  # this vehicle can't complete all rounds
+            # This vehicle can't complete the job at all -> skip it.
+            continue
 
-        # Total fuel = deadhead + (forward legs × n_rounds) + (return legs × n_rounds-1)
+        # Compute total fuel used: deadhead + all forward/return legs across rounds.
         dist_fwd   = fetch_distance(trip_start_loc, trip_end_loc) or 0.0
         dist_ret   = fetch_distance(trip_end_loc, trip_start_loc) or 0.0
         n_rounds   = len(rounds)
@@ -690,7 +874,7 @@ def find_best_single_vehicle_round_trips(
             v["fuel_consumption_rate"]
         )
 
-        # Prefer fewer rounds first, then lower fuel.
+        # Prefer fewer rounds; break ties by lower fuel cost (tuple comparison).
         if (n_rounds, total_fuel) < (best_count, best_fuel):
             best_vehicle = v
             best_rounds  = rounds
@@ -710,82 +894,47 @@ def find_best_combo_round_trips(
 ):
     """
     Find the best combination of 2-3 vehicles that together can deliver the
-    total load by running round trips IN PARALLEL — each vehicle handles its
-    own share of the load simultaneously, not sequentially.
-
-    This is preferred over a single vehicle doing many sequential round trips
-    because parallel delivery is faster and spreads the wear across vehicles.
-
-    Load split
-    ----------
-    Each vehicle's share is proportional to its max_load_capacity:
-        share_v = total_load × (capacity_v / sum_of_all_capacities_in_combo)
-
-    Each vehicle then independently runs schedule_round_trips() for its share.
-    All vehicles start at actual_start (parallel, not sequential).
-
-    Scoring
-    -------
-    A combo is valid only if ALL vehicles in it can complete their share.
-    Among valid combos, prefer:
-      1. Fewest total rounds across all vehicles (less time overall).
-      2. Lowest total fuel cost as tiebreaker.
-
-    Parameters
-    ----------
-    candidates        : list[dict] – Pre-filtered available+reachable+fuelled vehicles.
-    trip_start_loc    : int        – Origin location for all rounds.
-    trip_end_loc      : int        – Destination location for all rounds.
-    trip_duration_secs: int        – Forward leg duration (from DB).
-    total_load        : float      – Total cargo weight to deliver.
-    actual_start      : datetime   – Earliest any vehicle can begin Round 1.
-    avail_windows_map : dict       – vehicle_number → avail_windows list.
-
-    Returns
-    -------
-    (best_combo_result, best_fuel) where best_combo_result is a list of dicts
-    (one per vehicle with their rounds), or (None, inf) if no combo works.
+    total load by running round trips IN PARALLEL.
     """
     from itertools import combinations
 
     dist_fwd = fetch_distance(trip_start_loc, trip_end_loc) or 0.0
     dist_ret = fetch_distance(trip_end_loc, trip_start_loc) or 0.0
 
-    best_result     = None
-    best_fuel       = float("inf")
-    best_total_rds  = float("inf")
+    best_result    = None
+    best_fuel      = float("inf")
+    best_total_rds = float("inf")
 
+    # Try combos of size 2 and 3 (size 1 is handled by the single-vehicle strategy).
     for size in range(2, min(4, len(candidates) + 1)):
         for combo in combinations(candidates, size):
+            # Total load capacity available across this combo of vehicles.
             total_capacity = sum(v["max_load_capacity"] for v in combo)
 
-            # Split load proportionally to each vehicle's capacity.
             combo_result = []
             combo_fuel   = 0.0
             combo_rounds = 0
             valid        = True
 
             for v in combo:
-                # This vehicle's share of the total load.
+                # Split the total load proportionally to each vehicle's capacity.
                 share = total_load * (v["max_load_capacity"] / total_capacity)
 
-                # Deadhead from current location to trip_start_loc.
                 dist_dh   = fetch_distance(v["current_location"], trip_start_loc) or 0.0
                 dh_secs   = travel_time_secs(dist_dh, v["speed"])
                 fuel_dh   = fuel_needed(dist_dh, v["fuel_consumption_rate"])
 
-                # First round can't start before the vehicle arrives.
                 earliest_arrival = actual_start + timedelta(seconds=dh_secs) \
                     if v["current_location"] != trip_start_loc else actual_start
                 first_start = max(actual_start, earliest_arrival)
 
                 avail = avail_windows_map.get(v["vehicle_number"], [])
 
-                # Deduct deadhead fuel before passing to the round-trip scheduler.
                 fuel_after_dh = max(v["current_fuel"] - fuel_dh, 0.0)
                 v_copy = dict(v)
                 v_copy["current_fuel"] = fuel_after_dh
 
+                # Simulate this vehicle's own round trips for its share of the load.
                 rounds = schedule_round_trips(
                     v_copy, trip_start_loc, trip_end_loc,
                     trip_duration_secs, share,
@@ -793,12 +942,12 @@ def find_best_combo_round_trips(
                 )
 
                 if rounds is None:
-                    # This vehicle can't handle its share — whole combo fails.
+                    # If ANY vehicle in the combo can't do its share, the
+                    # whole combo is invalid.
                     valid = False
                     break
 
                 n_rounds   = len(rounds)
-                # Total fuel for this vehicle: deadhead + forward legs + return legs.
                 total_fuel = fuel_dh + fuel_needed(
                     dist_fwd * n_rounds + dist_ret * (n_rounds - 1),
                     v["fuel_consumption_rate"]
@@ -817,7 +966,8 @@ def find_best_combo_round_trips(
             if not valid:
                 continue
 
-            # Prefer fewer total rounds across all vehicles, then lower fuel.
+            # Prefer the combo with fewer total rounds (across all vehicles),
+            # then the lowest total fuel cost.
             if (combo_rounds, combo_fuel) < (best_total_rds, best_fuel):
                 best_total_rds = combo_rounds
                 best_fuel      = combo_fuel
@@ -840,37 +990,13 @@ def find_optimal_vehicle_combo(
     Find the smallest combination of available vehicles whose combined
     load capacity meets the trip's required capacity, minimising total
     fuel cost.
-
-    This handles the case where no single vehicle can carry the full load
-    but two or three smaller vehicles can together (load split).
-
-    Strategy
-    --------
-    1. Fetch all non-excluded vehicles.
-    2. Filter to those that pass the availability/reachability/fuel gate.
-    3. Compute fuel cost for each candidate.
-    4. Try all combinations of size 1 to 3 (cap to avoid combinatorial explosion).
-    5. Return the combo with the smallest size and lowest fuel among those
-       that meet the required capacity.
-
-    Parameters
-    ----------
-    original_vehicle_number    : str  – The conflicting vehicle (for capacity lookup).
-    trip_id                    : int  – Used to fetch actual load weight.
-    assigned_vehicles          : set  – Vehicle numbers busy during the trip window.
-    used_replacements_vehicles : set  – Already-assigned replacements in this run.
-
-    Returns
-    -------
-    (combo, total_fuel) where combo is list[dict] or None if no solution found.
     """
     from itertools import combinations
 
     actual_load = fetch_trip_actual_load(trip_id)
 
-    # Look up the original vehicle's type capacity to set the required capacity.
-    # If there's actual cargo, required = min(actual_load, type_capacity).
-    # If no cargo data, required = type_capacity (don't undersize the replacement).
+    # Look up the ORIGINAL vehicle's type capacity, used as a fallback/cap
+    # for how much capacity we actually need to replace.
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute("""
@@ -882,10 +1008,14 @@ def find_optimal_vehicle_combo(
     cur.close(); conn.close()
     vehicle_type_capacity = float(row[0]) if row else 0.0
 
+    # Required capacity is the smaller of the actual load weight and the
+    # original vehicle's rated capacity (don't over-provision beyond what
+    # the original vehicle was meant to carry).
     required_capacity = min(actual_load, vehicle_type_capacity) if actual_load > 0 else vehicle_type_capacity
     exclude = assigned_vehicles | used_replacements_vehicles
 
-    # Build pool of candidates that pass all gate checks.
+    # Pull the whole fleet (minus exclusions) and filter down to only
+    # vehicles that pass the availability/fuel/reachability gate check.
     all_vehicles = fetch_all_vehicles_except(exclude)
     candidates = []
     for v in all_vehicles:
@@ -899,28 +1029,30 @@ def find_optimal_vehicle_combo(
             v["fuel_consumption_rate"], v["speed"]
         )
         if fc == float("inf"):
-            continue  # infeasible fuel scenario
+            # Vehicle can't get fuelled up at all -> not a viable candidate.
+            continue
         v["fuel_cost"] = fc
         candidates.append(v)
 
     if not candidates:
         return None, float("inf")
 
-    # Sort by fuel cost so combinations are evaluated cheapest-first.
+    # Sort cheapest-fuel-first as a minor optimisation (doesn't change
+    # correctness, just makes the combo search slightly more predictable).
     candidates.sort(key=lambda v: v["fuel_cost"])
 
     best_combo      = None
     best_fuel       = float("inf")
     best_combo_size = float("inf")
 
-    # Try combos of size 1, 2, 3 — cap at 3 to avoid explosion with large fleets.
+    # Try combos of increasing size (1 up to 3 vehicles) until we find ones
+    # whose combined capacity covers the requirement, picking the smallest
+    # combo size first, then lowest fuel cost as a tiebreaker.
     for size in range(1, min(4, len(candidates) + 1)):
         for combo in combinations(candidates, size):
-            # Combined capacity must meet or exceed what the original vehicle type carried.
             if sum(v["max_load_capacity"] for v in combo) < required_capacity:
                 continue
             total_fuel = sum(v["fuel_cost"] for v in combo)
-            # Prefer smaller combos (fewer vehicles); among equal sizes, prefer lower fuel.
             if size < best_combo_size or (size == best_combo_size and total_fuel < best_fuel):
                 best_fuel       = total_fuel
                 best_combo_size = size
@@ -942,35 +1074,28 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
     priority order, using the first one that succeeds:
 
     Vehicle conflicts (tried in this order):
-      1. Same-type single swap      – One vehicle of the same type.
-      2. Multi-vehicle combo        – Multiple vehicles sharing the load.
-      3. Single vehicle round trips – One vehicle making repeated trips.
+      0. Poach same vehicle from lower-priority plan  ← NEW
+      1. Same-type single swap
+      2. Multi-vehicle combo
+      3. Combo round trips (parallel)
+      4. Single vehicle round trips
 
-    Individual conflicts:
-      1. Same crew-type replacement – Nearest available person of the same type.
-
-    The function tracks which replacements have been used across all conflicts
-    in this call so the same resource is never double-assigned.
-
-    Parameters
-    ----------
-    conflicts : list[dict] – Output of run_scheduler()["conflicts"].
-    plan_id   : int        – The plan being resolved.
-    trip_map  : dict       – trip_id → trip dict (from run_scheduler trip data).
-    base_t0   : datetime   – Plan zero-point.
-
-    Returns
-    -------
-    list[dict] – One resolution dict per conflict, with resolved=True/False
-                 and replacement details.
+    Individual conflicts (tried in this order):
+      0. Poach same individual from lower-priority plan  ← NEW
+      1. Same crew-type replacement
     """
-    # Track replacements assigned in this resolution run to avoid double-booking.
+    # Track which replacement resources we've already handed out during this
+    # resolution pass, so the same vehicle/individual isn't double-booked
+    # across two different conflicts.
     used_replacements_vehicles    = set()
     used_replacements_individuals = set()
     resolutions = []
 
-    # Pre-fetch availability windows for ALL vehicles once upfront,
-    # so the round-trip scheduler can use them without hitting the DB repeatedly.
+    # Fetch current plan's priority once upfront — used for all poach checks.
+    current_plan_priority = fetch_current_plan_priority(plan_id)
+
+    # Pre-fetch availability windows for ALL vehicles once upfront, to avoid
+    # repeated per-vehicle queries later (used by the round-trip strategies).
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute("SELECT vehicle_number FROM vehicles")
@@ -989,14 +1114,17 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         ]
     cur.close(); conn.close()
 
+    # ── Main loop: process each detected conflict one at a time ──
     for conflict in conflicts:
         trip_id    = conflict["trip_id"]
-        identifier = conflict["identifier"]   # vehicle number or individual name
+        identifier = conflict["identifier"]
         ctype      = conflict["conflict_type"]
+        subtype    = conflict.get("conflict_subtype", "")
 
-        # Normalise actual_start/end to datetime objects (they may arrive as ISO strings).
         actual_start = conflict["actual_start"]
         actual_end   = conflict["actual_end"]
+        # Conflicts may arrive with datetimes serialized as ISO strings
+        # (e.g. from a JSON payload) — normalize them back to datetime objects.
         if isinstance(actual_start, str):
             actual_start = datetime.fromisoformat(actual_start)
         if isinstance(actual_end, str):
@@ -1004,7 +1132,7 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
 
         trip = trip_map.get(trip_id)
         if not trip:
-            # Trip data missing — cannot attempt any resolution.
+            # Trip data missing entirely -> can't resolve, record as failed.
             resolutions.append({
                 "trip_id": trip_id, "original": identifier,
                 "conflict_type": ctype, "replacement": None, "resolved": False
@@ -1015,8 +1143,8 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         trip_end_loc   = trip.get("end_location_id")
         trip_dur_secs  = trip.get("duration_secs", 0)
 
-        # Re-compute busy sets specifically for THIS conflict's time window,
-        # so we don't exclude resources that are only busy at other times.
+        # Find out which vehicles/individuals are already busy elsewhere in
+        # this plan during the conflict window, so we don't suggest them.
         assigned_vehicles, assigned_individuals = fetch_plan_assigned_resources(
             plan_id, actual_start, actual_end, base_t0
         )
@@ -1027,16 +1155,45 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         if ctype == "Vehicle":
             actual_load = fetch_trip_actual_load(trip_id)
 
+            # ── Strategy 0: poach the same vehicle from a lower-priority plan ──
+            # Only applies when the conflict subtype is 'unavailable' and the
+            # blocking reason is an assignment to a plan of strictly lower priority
+            # whose window hasn't started yet.
+            if subtype == "unavailable" and current_plan_priority:
+                vehicle_avail_windows = avail_windows_map.get(identifier, [])
+                poachable, blocking_plan = check_vehicle_poachable(
+                    identifier, vehicle_avail_windows, current_plan_priority,
+                    actual_start, actual_end
+                )
+                if poachable:
+                    # Resolved without needing any new vehicle — we just
+                    # reassign the SAME vehicle, overriding the lower-priority plan.
+                    resolutions.append({
+                        "trip_id":            trip_id,
+                        "original":           identifier,
+                        "conflict_type":      "Vehicle",
+                        "replacement":        identifier,
+                        "replacement_name":   identifier,
+                        "resolved":           True,
+                        "resolution_type":    "poached_from_lower_priority_plan",
+                        "poached_from_plan":  blocking_plan,
+                        "note":               f"Taken from lower priority plan: {blocking_plan}",
+                        "split":              False,
+                        "rounds":             None,
+                        "fuel_cost":          None,
+                    })
+                    used_replacements_vehicles.add(identifier)
+                    continue  # resolved — skip all other strategies
+
             # ── Strategy 1: same-type single vehicle swap ──
-            # Cheapest and simplest option: find one vehicle of the same type
-            # that is available, reachable, and fuelled, then pick the lowest
-            # fuel-cost one.
             same_type = fetch_same_type_vehicles(
                 identifier, assigned_vehicles | used_replacements_vehicles
             )
             best      = None
             best_fuel = float("inf")
 
+            # Among same-type candidates that pass the gate check, pick the
+            # one with the lowest total fuel cost.
             for c in same_type:
                 if not is_vehicle_available_reachable_fuelled(
                     c, trip_start_loc, trip_end_loc, actual_start, actual_end, base_t0
@@ -1052,7 +1209,7 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     best      = c
 
             if best:
-                # Found a same-type replacement — record and move to next conflict.
+                # Found a clean single-vehicle same-type swap -> done, move on.
                 used_replacements_vehicles.add(best["vehicle_number"])
                 resolutions.append({
                     "trip_id":          trip_id,
@@ -1066,11 +1223,11 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     "split":            False,
                     "rounds":           None,
                 })
-                continue  # ← skip to next conflict; this one is resolved
+                continue
+
+            # No same-type swap worked — fall through to more complex strategies.
 
             # ── Strategy 2: multi-vehicle combo (single pass) ──
-            # No single same-type vehicle worked. Try splitting the load
-            # across multiple vehicles of any type in one simultaneous pass.
             combo, combo_fuel = find_optimal_vehicle_combo(
                 identifier, trip_id,
                 trip_start_loc, trip_end_loc,
@@ -1079,9 +1236,8 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             )
 
             # ── Strategy 3: multi-vehicle combo round trips (parallel) ──
-            # Neither strategy 1 nor 2 worked (or combo capacity was insufficient).
-            # Try 2-3 vehicles each doing round trips for their share of the load
-            # simultaneously — faster than one vehicle doing all rounds sequentially.
+            # Gather candidates that pass the gate check once, and reuse them
+            # for both the combo-round-trip and single-vehicle-round-trip strategies.
             all_candidates = fetch_all_vehicles_except(
                 assigned_vehicles | used_replacements_vehicles
             )
@@ -1098,24 +1254,18 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             )
 
             # ── Strategy 4: single vehicle round trips ──
-            # Last resort: one vehicle making all trips sequentially.
             rt_vehicle, rt_rounds, rt_fuel = find_best_single_vehicle_round_trips(
                 rt_combo_candidates, trip_start_loc, trip_end_loc,
                 trip_dur_secs, actual_load, actual_start, avail_windows_map
             )
 
-            # ── Pick the best among combo, combo-round-trips, single-round-trips ──
-            # Priority: fewer vehicles and parallel > sequential.
-            # Among viable options, choose lowest total fuel cost.
-            use_combo        = combo is not None
-            use_combo_rt     = combo_rt_result is not None
-            use_single_rt    = rt_vehicle is not None
-
-            # Collect viable options and pick the cheapest.
+            # ── Pick the best among remaining strategies ──
+            # Collect whichever of strategies 2-4 actually produced a result,
+            # then choose the cheapest (lowest fuel cost) one overall.
             options = []
-            if use_combo:     options.append(("combo",     combo_fuel))
-            if use_combo_rt:  options.append(("combo_rt",  combo_rt_fuel))
-            if use_single_rt: options.append(("single_rt", rt_fuel))
+            if combo is not None:         options.append(("combo",     combo_fuel))
+            if combo_rt_result is not None: options.append(("combo_rt", combo_rt_fuel))
+            if rt_vehicle is not None:    options.append(("single_rt", rt_fuel))
 
             best_option = min(options, key=lambda x: x[1]) if options else None
 
@@ -1148,7 +1298,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     "resolved":         True,
                     "resolution_type":  "multi_vehicle_combo_round_trips",
                     "split":            True,
-                    # Per-vehicle round schedules so the UI can show each vehicle's plan.
                     "rounds": {
                         v["vehicle_number"]: {
                             "load_share": v["load_share"],
@@ -1184,7 +1333,7 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                 })
 
             else:
-                # All four strategies failed — unresolvable conflict.
+                # Every strategy failed — leave the conflict unresolved.
                 resolutions.append({
                     "trip_id":         trip_id,
                     "original":        identifier,
@@ -1199,21 +1348,44 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         # INDIVIDUAL CONFLICT RESOLUTION
         # ══════════════════════════════════════════
         elif ctype == "Individual":
-            # Look up the individual_id from the trip's crew list using the name.
-            # (identifier is the name string for individuals, not an ID.)
+            # Look up the conflicting individual's ID from the trip's crew list.
             individual_id = next(
                 (c["individual_id"] for c in trip["crew"] if c["name"] == identifier),
                 None
             )
+
+            # ── Strategy 0: poach the same individual from a lower-priority plan ──
+            # Only applies when the conflict subtype is 'unavailable'.
+            if subtype == "unavailable" and current_plan_priority:
+                poachable, blocking_plan, ind_id = check_individual_poachable(
+                    identifier, trip["crew"], current_plan_priority,
+                    actual_start, actual_end
+                )
+                if poachable:
+                    if ind_id:
+                        used_replacements_individuals.add(ind_id)
+                    resolutions.append({
+                        "trip_id":           trip_id,
+                        "original":          identifier,
+                        "conflict_type":     "Individual",
+                        "replacement":       identifier,
+                        "replacement_name":  identifier,
+                        "resolved":          True,
+                        "resolution_type":   "poached_from_lower_priority_plan",
+                        "poached_from_plan": blocking_plan,
+                        "note":              f"Taken from lower priority plan: {blocking_plan}",
+                    })
+                    continue  # resolved — skip standard replacement search
+
+            # ── Strategy 1: same crew-type replacement ──
             if individual_id is None:
-                # Crew member not found in trip data — cannot resolve.
+                # Couldn't even identify who the conflicting person is -> can't resolve.
                 resolutions.append({
                     "trip_id": trip_id, "original": identifier,
                     "conflict_type": "Individual", "replacement": None, "resolved": False
                 })
                 continue
 
-            # Fetch all same-type crew members who aren't busy or already assigned.
             candidates = fetch_same_type_individuals(
                 individual_id,
                 assigned_individuals | used_replacements_individuals
@@ -1221,13 +1393,13 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             best      = None
             best_dist = float("inf")
 
+            # Among same-crew-type candidates that pass the gate check,
+            # prefer whoever is physically closest to the trip's start location.
             for c in candidates:
                 if not is_individual_available_reachable(
                     c, trip_start_loc, actual_start, actual_end, base_t0
                 ):
                     continue
-                # Among valid candidates, prefer the one closest to the trip start
-                # (minimises travel time / disruption).
                 dist = fetch_distance(c["current_location"], trip_start_loc) or 0.0
                 if dist < best_dist:
                     best_dist = dist
@@ -1245,7 +1417,7 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     "resolved":         True,
                 })
             else:
-                # No same-type crew member available — unresolvable.
+                # No viable replacement found -> leave unresolved.
                 resolutions.append({
                     "trip_id": trip_id, "original": identifier,
                     "conflict_type": "Individual", "replacement": None, "resolved": False

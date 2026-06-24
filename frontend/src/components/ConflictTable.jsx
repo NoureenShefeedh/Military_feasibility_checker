@@ -28,7 +28,6 @@ export default function ConflictTable({ conflicts, resolutions }) {
             </thead>
             <tbody>
               {resolved.map((r, i) => (
-                // ── Fragment so RoundsTable row sits inside <tbody> ──
                 <React.Fragment key={i}>
                   <tr style={{
                     borderBottom: r.rounds ? "none" : "1px solid #f0f0f0",
@@ -50,15 +49,31 @@ export default function ConflictTable({ conflicts, resolutions }) {
                             {Array.isArray(r.replacement)
                               ? r.replacement.join(", ")
                               : r.replacement}
-                            <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
-                              {Array.isArray(r.replacement_name)
-                                ? r.replacement_name.join(", ")
-                                : r.replacement_name}
-                            </span>
+                            {/* Only show name separately if it differs from the number */}
+                            {r.replacement_name && r.replacement_name !== r.replacement && (
+                              <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
+                                {Array.isArray(r.replacement_name)
+                                  ? r.replacement_name.join(", ")
+                                  : r.replacement_name}
+                              </span>
+                            )}
+                            {/* Poach note */}
+                            {r.resolution_type === "poached_from_lower_priority_plan" && r.poached_from_plan && (
+                              <span style={{ color: "#e67e22", fontWeight: 500, fontSize: "12px", marginLeft: "8px" }}>
+                                ↩ Taken from: {r.poached_from_plan}
+                              </span>
+                            )}
                           </>
                         : <>
                             {r.replacement_name}
-                            {r.crew_type && (
+                            {/* Poach note for individuals */}
+                            {r.resolution_type === "poached_from_lower_priority_plan" && r.poached_from_plan && (
+                              <span style={{ color: "#e67e22", fontWeight: 500, fontSize: "12px", marginLeft: "8px" }}>
+                                ↩ Taken from: {r.poached_from_plan}
+                              </span>
+                            )}
+                            {/* crew type — only when not a poach */}
+                            {r.crew_type && r.resolution_type !== "poached_from_lower_priority_plan" && (
                               <span style={{ color: "#888", fontWeight: 400, fontSize: "12px", marginLeft: "6px" }}>
                                 ({r.crew_type})
                               </span>
@@ -67,7 +82,7 @@ export default function ConflictTable({ conflicts, resolutions }) {
                       }
                     </td>
                     <td style={tdStyle}>
-                      <TypeMatchBadge resolution={r} resolutionType={r.resolution_type}/>
+                      <TypeMatchBadge resolution={r} />
                     </td>
                   </tr>
 
@@ -223,9 +238,13 @@ function RoundsRows({ rounds }) {
     </table>
   );
 }
-function TypeMatchBadge({ resolution, resolutionType }) {
+
+function TypeMatchBadge({ resolution }) {
   const { resolution_type, split, conflict_type } = resolution;
 
+  if (resolution_type === "poached_from_lower_priority_plan") {
+    return <Badge text="Lower Priority Plan ↩" color="#e67e22" />;
+  }
   if (conflict_type === "Individual") {
     return <Badge text="Same Type" color="#2e7d52" />;
   }
@@ -242,8 +261,8 @@ function TypeMatchBadge({ resolution, resolutionType }) {
     return <Badge text="Round Trips ↺" color="#1a6eb5" />;
   }
   if (resolution_type === "multi_vehicle_combo_round_trips") {
-  return <Badge text="Combo Round Trips ↺" color="#8e44ad" />;
-}
+    return <Badge text="Combo Round Trips ↺" color="#8e44ad" />;
+  }
   return <Badge text="—" color="#888" />;
 }
 
