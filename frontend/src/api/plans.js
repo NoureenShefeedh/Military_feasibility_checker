@@ -11,7 +11,7 @@ export const fetchPlanTrips = async (planId) => {
 };
 
 export const checkFeasibility = async (planId, date, time = null) => {
-  const res = await fetch(`${BASE}/api/plans/feasibility`, {
+  const res = await fetch(`${BASE}/api/feasibility`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ plan_id: planId, date, time }),

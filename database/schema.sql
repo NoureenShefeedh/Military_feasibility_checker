@@ -943,3 +943,24 @@ ALTER TABLE ONLY public.vehicles
 
 \unrestrict Wz70pCGj53rmfCDQqRmPTnmUZuYceaRIEvDTAjgXkHviFXuYcejmc4axwy8kSbS
 
+ALTER TABLE public.locations
+ADD COLUMN has_fuel_station boolean DEFAULT false;
+
+CREATE TYPE public.plan_priority AS ENUM ('low', 'medium', 'high');
+
+ALTER TABLE public.plans
+ADD COLUMN priority public.plan_priority NOT NULL DEFAULT 'medium';
+
+CREATE OR REPLACE FUNCTION cleanup_expired_availability()
+
+RETURNS VOID LANGUAGE plpgsql AS $$
+
+BEGIN
+
+  DELETE FROM vehicle_availability WHERE not_available_to <= NOW();
+
+  DELETE FROM individual_availability WHERE not_available_to <= NOW();
+
+END;
+
+$$;

@@ -497,6 +497,37 @@ def fetch_same_type_individuals(individual_id, exclude_ids):
     } for r in rows]
 
 
+def fetch_all_individual_avail_windows():
+    """
+    Batch-fetch unavailability windows for ALL individuals in a single query.
+
+    Used by the second pass in resolve_conflicts() to build the crew avail_windows
+    needed by find_next_feasible_start() without issuing per-individual queries.
+
+    Returns
+    -------
+    dict[int, list[tuple]] – Maps individual_id -> list of (not_from, not_to, reason)
+                             with timezone info stripped (naive datetimes).
+    """
+    conn = get_connection()
+    cur  = conn.cursor()
+    cur.execute("""
+        SELECT individual_id, not_available_from, not_available_to, reason
+        FROM individual_availability
+    """)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    avail_map = {}
+    for individual_id, not_from, not_to, reason in rows:
+        nf = not_from.replace(tzinfo=None) if not_from and not_from.tzinfo else not_from
+        nt = not_to.replace(tzinfo=None)   if not_to   and not_to.tzinfo   else not_to
+        avail_map.setdefault(individual_id, []).append((nf, nt, reason))
+
+    return avail_map
+
+
 # ─────────────────────────────────────────────
 # AVAILABILITY / REACHABILITY CHECKS
 # ─────────────────────────────────────────────
@@ -1062,6 +1093,186 @@ def find_optimal_vehicle_combo(
 
 
 # ─────────────────────────────────────────────
+# NEXT FEASIBLE START TIME (shift the trip itself, keep same resources)
+# ─────────────────────────────────────────────
+
+def _earliest_resource_arrival(current_loc, target_loc, speed_kmh):
+    """
+    Helper: how long (in seconds) it takes a resource at current_loc to
+    arrive at target_loc, travelling at the given speed.
+
+    Returns 0 if already there, or None if there's no known route.
+    """
+    if current_loc == target_loc:
+        return 0
+    dist = fetch_distance(current_loc, target_loc)
+    if dist is None:
+        return None
+    if dist == 0:
+        return 0
+    return travel_time_secs(dist, speed_kmh)
+
+
+def find_next_feasible_start(
+    trip_start_loc, trip_end_loc, trip_duration_secs,
+    original_start,
+    vehicle,            # dict: vehicle_number, current_location, speed, current_fuel,
+                         #       fuel_capacity, fuel_consumption_rate, avail_windows
+    crew,               # list[dict]: individual_id, name, current_location, avail_windows
+    max_days=30,
+):
+    """
+    Find the next feasible start time for THIS SAME trip using the SAME
+    vehicle and SAME crew (no replacements) — i.e. "what's the earliest
+    time everyone currently tied to this trip could actually do it?"
+
+    Repeatedly pushes the candidate start time forward past whichever
+    blocker (availability / reachability / fuel) is encountered first,
+    then re-validates everything from scratch — because shifting later
+    to dodge one resource's conflict can expose a DIFFERENT conflict for
+    that same resource, or for someone else, at the new time.
+
+    Parameters
+    ----------
+    trip_start_loc      : int      – Location ID the trip departs from.
+    trip_end_loc        : int      – Location ID the trip delivers to.
+    trip_duration_secs  : int      – Duration of the trip itself (DB value).
+    original_start      : datetime – The start time the user actually asked for.
+    vehicle             : dict     – The trip's assigned vehicle and its data.
+    crew                : list[dict] – The trip's assigned crew and their data.
+    max_days            : int      – Safety cap; give up after shifting this far.
+
+    Returns
+    -------
+    dict with:
+        "feasible_start" : datetime or None (None if nothing found within cap)
+        "feasible_end"   : datetime or None
+        "shifted_by"     : timedelta (how far forward we had to move it)
+        "blocked_by"     : str or None – name of the last resource that forced a shift,
+                                          useful for explaining the result to the user.
+    if infeasible within max_days, feasible_start/feasible_end are None.
+    """
+    cap_deadline   = original_start + timedelta(days=max_days)
+    candidate      = original_start
+    last_blocker   = None
+
+    while candidate <= cap_deadline:
+        candidate_end = candidate + timedelta(seconds=trip_duration_secs)
+        shifted       = False  # did we move candidate this pass?
+
+        # ── 1. Vehicle availability ──
+        conflict, window = overlaps_availability(
+            candidate, candidate_end, vehicle["avail_windows"]
+        )
+        if conflict:
+            # Jump straight past the end of the blocking window and retry
+            # the whole check from scratch at the new time.
+            _, not_to, _ = window
+            candidate    = max(candidate, not_to)
+            last_blocker = f"Vehicle {vehicle['vehicle_number']} (unavailable)"
+            shifted      = True
+            continue
+
+        # ── 2. Crew availability (every crew member must be free) ──
+        for member in crew:
+            conflict, window = overlaps_availability(
+                candidate, candidate_end, member["avail_windows"]
+            )
+            if conflict:
+                _, not_to, _ = window
+                candidate    = max(candidate, not_to)
+                last_blocker = f"{member['name']} (unavailable)"
+                shifted      = True
+                break
+        if shifted:
+            continue
+
+        # ── 3. Vehicle reachability ──
+        dh_secs = _earliest_resource_arrival(
+            vehicle["current_location"], trip_start_loc, vehicle["speed"]
+        )
+        if dh_secs is None:
+            # No known route at all — this vehicle can never reach this trip.
+            return {
+                "feasible_start": None, "feasible_end": None,
+                "shifted_by": None,
+                "blocked_by": f"Vehicle {vehicle['vehicle_number']} (no route to start location)",
+            }
+        # Vehicle must DEPART early enough to arrive by `candidate`; check that
+        # departure window itself doesn't hit an unavailability.
+        if dh_secs > 0:
+            depart_time = candidate - timedelta(seconds=dh_secs)
+            conflict, window = overlaps_availability(
+                depart_time, candidate, vehicle["avail_windows"]
+            )
+            if conflict:
+                # Can't even start travelling in time — push candidate to
+                # just after this blocking window, then retry.
+                _, not_to, _ = window
+                candidate    = max(candidate, not_to + timedelta(seconds=dh_secs))
+                last_blocker = f"Vehicle {vehicle['vehicle_number']} (can't depart in time)"
+                shifted      = True
+                continue
+
+        # ── 4. Crew reachability ──
+        for member in crew:
+            m_secs = _earliest_resource_arrival(
+                member["current_location"], trip_start_loc, INDIVIDUAL_SPEED_KMH
+            )
+            if m_secs is None:
+                return {
+                    "feasible_start": None, "feasible_end": None,
+                    "shifted_by": None,
+                    "blocked_by": f"{member['name']} (no route to start location)",
+                }
+            if m_secs > 0:
+                depart_time = candidate - timedelta(seconds=m_secs)
+                conflict, window = overlaps_availability(
+                    depart_time, candidate, member["avail_windows"]
+                )
+                if conflict:
+                    _, not_to, _ = window
+                    candidate    = max(candidate, not_to + timedelta(seconds=m_secs))
+                    last_blocker = f"{member['name']} (can't depart in time)"
+                    shifted      = True
+                    break
+        if shifted:
+            continue
+
+        # ── 5. Vehicle fuel ──
+        fuel_conflict = check_vehicle_fuel(
+            vehicle["current_location"], trip_start_loc, trip_end_loc,
+            vehicle["current_fuel"], vehicle["fuel_capacity"],
+            vehicle["fuel_consumption_rate"], vehicle["speed"],
+            candidate, candidate, candidate_end,
+            vehicle["vehicle_number"], vehicle["avail_windows"]
+        )
+        if fuel_conflict:
+            # Fuel can't be resolved by waiting alone (it's about distance,
+            # not time) — refuelling adds a fixed delay, so nudge forward by
+            # the standard fill time and try again rather than giving up.
+            candidate    = candidate + timedelta(minutes=FUEL_FILL_TIME_MINS)
+            last_blocker = f"Vehicle {vehicle['vehicle_number']} (insufficient fuel)"
+            shifted      = True
+            continue
+
+        # ── Everything passed — this candidate works ──
+        return {
+            "feasible_start": candidate,
+            "feasible_end":   candidate_end,
+            "shifted_by":     candidate - original_start,
+            "blocked_by":     last_blocker,  # last thing that forced a shift, or None
+        }
+
+    # Exceeded the cap without finding a feasible time.
+    return {
+        "feasible_start": None, "feasible_end": None,
+        "shifted_by": cap_deadline - original_start,
+        "blocked_by": last_blocker,
+    }
+
+
+# ─────────────────────────────────────────────
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────
 
@@ -1074,15 +1285,26 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
     priority order, using the first one that succeeds:
 
     Vehicle conflicts (tried in this order):
-      0. Poach same vehicle from lower-priority plan  ← NEW
+      0. Poach same vehicle from lower-priority plan
       1. Same-type single swap
       2. Multi-vehicle combo
       3. Combo round trips (parallel)
       4. Single vehicle round trips
 
     Individual conflicts (tried in this order):
-      0. Poach same individual from lower-priority plan  ← NEW
+      0. Poach same individual from lower-priority plan
       1. Same crew-type replacement
+
+    After the first pass, a second pass runs find_next_feasible_start() for
+    every conflicting trip (using its original vehicle + crew, no
+    replacements), so the caller always knows when the trip COULD run by
+    itself if everyone just waited.
+
+    Returns
+    -------
+    dict with two keys:
+        "resolutions"        : list – one resolution dict per conflict (same shape as before)
+        "next_feasible_times": list – one dict per trip with feasible_start/end/shifted_by/blocked_by
     """
     # Track which replacement resources we've already handed out during this
     # resolution pass, so the same vehicle/individual isn't double-booked
@@ -1156,9 +1378,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             actual_load = fetch_trip_actual_load(trip_id)
 
             # ── Strategy 0: poach the same vehicle from a lower-priority plan ──
-            # Only applies when the conflict subtype is 'unavailable' and the
-            # blocking reason is an assignment to a plan of strictly lower priority
-            # whose window hasn't started yet.
             if subtype == "unavailable" and current_plan_priority:
                 vehicle_avail_windows = avail_windows_map.get(identifier, [])
                 poachable, blocking_plan = check_vehicle_poachable(
@@ -1166,8 +1385,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     actual_start, actual_end
                 )
                 if poachable:
-                    # Resolved without needing any new vehicle — we just
-                    # reassign the SAME vehicle, overriding the lower-priority plan.
                     resolutions.append({
                         "trip_id":            trip_id,
                         "original":           identifier,
@@ -1183,7 +1400,7 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                         "fuel_cost":          None,
                     })
                     used_replacements_vehicles.add(identifier)
-                    continue  # resolved — skip all other strategies
+                    continue
 
             # ── Strategy 1: same-type single vehicle swap ──
             same_type = fetch_same_type_vehicles(
@@ -1192,8 +1409,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             best      = None
             best_fuel = float("inf")
 
-            # Among same-type candidates that pass the gate check, pick the
-            # one with the lowest total fuel cost.
             for c in same_type:
                 if not is_vehicle_available_reachable_fuelled(
                     c, trip_start_loc, trip_end_loc, actual_start, actual_end, base_t0
@@ -1209,7 +1424,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     best      = c
 
             if best:
-                # Found a clean single-vehicle same-type swap -> done, move on.
                 used_replacements_vehicles.add(best["vehicle_number"])
                 resolutions.append({
                     "trip_id":          trip_id,
@@ -1225,8 +1439,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                 })
                 continue
 
-            # No same-type swap worked — fall through to more complex strategies.
-
             # ── Strategy 2: multi-vehicle combo (single pass) ──
             combo, combo_fuel = find_optimal_vehicle_combo(
                 identifier, trip_id,
@@ -1236,8 +1448,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             )
 
             # ── Strategy 3: multi-vehicle combo round trips (parallel) ──
-            # Gather candidates that pass the gate check once, and reuse them
-            # for both the combo-round-trip and single-vehicle-round-trip strategies.
             all_candidates = fetch_all_vehicles_except(
                 assigned_vehicles | used_replacements_vehicles
             )
@@ -1260,12 +1470,10 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             )
 
             # ── Pick the best among remaining strategies ──
-            # Collect whichever of strategies 2-4 actually produced a result,
-            # then choose the cheapest (lowest fuel cost) one overall.
             options = []
-            if combo is not None:         options.append(("combo",     combo_fuel))
+            if combo is not None:           options.append(("combo",     combo_fuel))
             if combo_rt_result is not None: options.append(("combo_rt", combo_rt_fuel))
-            if rt_vehicle is not None:    options.append(("single_rt", rt_fuel))
+            if rt_vehicle is not None:      options.append(("single_rt", rt_fuel))
 
             best_option = min(options, key=lambda x: x[1]) if options else None
 
@@ -1333,7 +1541,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                 })
 
             else:
-                # Every strategy failed — leave the conflict unresolved.
                 resolutions.append({
                     "trip_id":         trip_id,
                     "original":        identifier,
@@ -1348,14 +1555,12 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         # INDIVIDUAL CONFLICT RESOLUTION
         # ══════════════════════════════════════════
         elif ctype == "Individual":
-            # Look up the conflicting individual's ID from the trip's crew list.
             individual_id = next(
                 (c["individual_id"] for c in trip["crew"] if c["name"] == identifier),
                 None
             )
 
             # ── Strategy 0: poach the same individual from a lower-priority plan ──
-            # Only applies when the conflict subtype is 'unavailable'.
             if subtype == "unavailable" and current_plan_priority:
                 poachable, blocking_plan, ind_id = check_individual_poachable(
                     identifier, trip["crew"], current_plan_priority,
@@ -1375,11 +1580,10 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                         "poached_from_plan": blocking_plan,
                         "note":              f"Taken from lower priority plan: {blocking_plan}",
                     })
-                    continue  # resolved — skip standard replacement search
+                    continue
 
             # ── Strategy 1: same crew-type replacement ──
             if individual_id is None:
-                # Couldn't even identify who the conflicting person is -> can't resolve.
                 resolutions.append({
                     "trip_id": trip_id, "original": identifier,
                     "conflict_type": "Individual", "replacement": None, "resolved": False
@@ -1393,8 +1597,6 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
             best      = None
             best_dist = float("inf")
 
-            # Among same-crew-type candidates that pass the gate check,
-            # prefer whoever is physically closest to the trip's start location.
             for c in candidates:
                 if not is_individual_available_reachable(
                     c, trip_start_loc, actual_start, actual_end, base_t0
@@ -1417,10 +1619,127 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
                     "resolved":         True,
                 })
             else:
-                # No viable replacement found -> leave unresolved.
                 resolutions.append({
                     "trip_id": trip_id, "original": identifier,
                     "conflict_type": "Individual", "replacement": None, "resolved": False
                 })
 
-    return resolutions
+    # ══════════════════════════════════════════
+    # SECOND PASS: next feasible start times
+    # ══════════════════════════════════════════
+    # For every conflicting trip, regardless of whether a replacement was
+    # found, also compute when the ORIGINAL vehicle + crew could do the trip
+    # by shifting its start time. This gives the caller a "just wait" option
+    # to present alongside any replacement suggestion.
+    #
+    # IMPORTANT: trip dicts come from fetch_plan_data() in routes/feasible.py,
+    # which uses these field names (NOT "vehicle_current_location" /
+    # "vehicle_current_fuel" / "vehicle_fuel_capacity" /
+    # "vehicle_fuel_consumption_rate" / "start_offset" / member["current_location"]
+    # — using the wrong names here was the bug that made this section render
+    # with no values, since every field silently came back None):
+    #
+    #   trip["start_offset_secs"]      – int, ALREADY in seconds (not a time/timedelta)
+    #   trip["vehicle_current_loc"]    – vehicle's current location id
+    #   trip["current_fuel"]           – vehicle's current fuel level
+    #   trip["fuel_capacity"]          – vehicle's tank capacity
+    #   trip["fuel_consumption_rate"]  – vehicle's consumption rate
+    #   trip["vehicle_speed"]          – matches, no change needed
+    #   crew["current_location_id"]    – crew member's current location id
+    #   (there is no "actual_start" stored on the trip dict at all — it must
+    #    always be derived from base_t0 + start_offset_secs)
+
+    all_individual_avail = fetch_all_individual_avail_windows()
+
+    seen_trip_ids = set()
+    conflicting_trip_ids = []
+    for conflict in conflicts:
+        tid = conflict["trip_id"]
+        if tid not in seen_trip_ids:
+            seen_trip_ids.add(tid)
+            conflicting_trip_ids.append(tid)
+
+    next_feasible_times = []
+
+    for trip_id in conflicting_trip_ids:
+        trip = trip_map.get(trip_id)
+        if not trip:
+            next_feasible_times.append({
+                "trip_id":        trip_id,
+                "feasible_start": None,
+                "feasible_end":   None,
+                "shifted_by":     None,
+                "blocked_by":     "Trip data not found",
+            })
+            continue
+
+        trip_start_loc = trip["start_location_id"]
+        trip_end_loc   = trip.get("end_location_id")
+        trip_dur_secs  = trip.get("duration_secs", 0)
+
+        # original_start is derived from base_t0 + start_offset_secs, exactly
+        # the same way run_scheduler() computes actual_start for every trip.
+        # start_offset_secs is ALREADY an integer number of seconds — do NOT
+        # treat it like a time/timedelta object.
+        offset_secs = trip.get("start_offset_secs")
+        if offset_secs is None:
+            original_start = None
+        else:
+            original_start = base_t0 + timedelta(seconds=offset_secs)
+
+        if isinstance(original_start, str):
+            original_start = datetime.fromisoformat(original_start)
+
+        if original_start is None:
+            next_feasible_times.append({
+                "trip_id":        trip_id,
+                "feasible_start": None,
+                "feasible_end":   None,
+                "shifted_by":     None,
+                "blocked_by":     "No start time available",
+            })
+            continue
+
+        # Build the vehicle dict that find_next_feasible_start() expects,
+        # mapped from the ACTUAL keys fetch_plan_data() produces.
+        vehicle_number = trip.get("vehicle_number")
+        vehicle = {
+            "vehicle_number":        vehicle_number,
+            "current_location":      trip.get("vehicle_current_loc"),
+            "speed":                 trip.get("vehicle_speed"),
+            "current_fuel":          trip.get("current_fuel"),
+            "fuel_capacity":         trip.get("fuel_capacity"),
+            "fuel_consumption_rate": trip.get("fuel_consumption_rate"),
+            "avail_windows":         avail_windows_map.get(vehicle_number, []),
+        }
+
+        # Build the crew list, mapped from the ACTUAL keys ("current_location_id",
+        # not "current_location"), with availability windows attached from the
+        # batch-fetched map (no extra DB queries needed here).
+        crew = []
+        for member in trip.get("crew", []):
+            iid = member.get("individual_id")
+            crew.append({
+                "individual_id":    iid,
+                "name":             member.get("name"),
+                "current_location": member.get("current_location_id"),
+                "avail_windows":    all_individual_avail.get(iid, []),
+            })
+
+        result = find_next_feasible_start(
+            trip_start_loc, trip_end_loc, trip_dur_secs,
+            original_start, vehicle, crew,
+        )
+
+        next_feasible_times.append({
+            "trip_id":        trip_id,
+            "feasible_start": result["feasible_start"].isoformat() if result["feasible_start"] else None,
+            "feasible_end":   result["feasible_end"].isoformat()   if result["feasible_end"]   else None,
+            "shifted_by":     str(result["shifted_by"])            if result["shifted_by"] is not None else None,
+            "blocked_by":     result["blocked_by"],
+        })
+
+    return {
+        "resolutions":         resolutions,
+        "next_feasible_times": next_feasible_times,
+    }
