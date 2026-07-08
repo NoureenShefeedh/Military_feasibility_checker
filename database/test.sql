@@ -1,1 +1,1 @@
-select * from individual1_availability
+SELECT * FROM vehicles

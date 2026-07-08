@@ -184,75 +184,75 @@ AND t.vehicle_number = 'V-103';
 -- VEHICLE AVAILABILITY
 -- =========================================================
 INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
-('V-100', 'Maintenance', '2026-06-25 08:00:00'::timestamp, '2026-06-25 12:00:00'::timestamp),
-('V-102', 'Engine Failure', '2026-06-27 07:00:00'::timestamp, '2026-06-27 18:00:00'::timestamp),
-('V-101', 'Maintenance', '2026-06-30 08:00:00'::timestamp, '2026-06-30 17:00:00'::timestamp),
-('V-102', 'Scheduled Inspection', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-104', 'Driver Shortage', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-105', 'Driver Shortage', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-202', 'Blocked during travel window', '2026-07-06 07:45:00'::timestamp, '2026-07-06 08:00:00'::timestamp);
+('V-100', 'Maintenance', '2026-07-25 08:00:00'::timestamp, '2026-07-25 12:00:00'::timestamp),
+('V-102', 'Engine Failure', '2026-07-27 07:00:00'::timestamp, '2026-07-27 18:00:00'::timestamp),
+('V-101', 'Maintenance', '2026-07-30 08:00:00'::timestamp, '2026-07-30 17:00:00'::timestamp),
+('V-102', 'Scheduled Inspection', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-104', 'Driver Shortage', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-105', 'Driver Shortage', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-202', 'Blocked during travel window', '2026-08-06 07:45:00'::timestamp, '2026-08-06 08:00:00'::timestamp);
 
 INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
-('V-200', 'Reserved', '2026-06-24 00:00:00'::timestamp, '2026-06-24 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-06-25 00:00:00'::timestamp, '2026-06-25 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-06-26 00:00:00'::timestamp, '2026-06-26 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-06-27 00:00:00'::timestamp, '2026-06-27 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-06-30 00:00:00'::timestamp, '2026-06-30 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-07-24 00:00:00'::timestamp, '2026-07-24 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-07-25 00:00:00'::timestamp, '2026-07-25 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-07-26 00:00:00'::timestamp, '2026-07-26 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-07-27 00:00:00'::timestamp, '2026-07-27 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-07-30 00:00:00'::timestamp, '2026-07-30 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp),
 
-('V-201', 'Reserved', '2026-06-24 00:00:00'::timestamp, '2026-06-24 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-06-25 00:00:00'::timestamp, '2026-06-25 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-06-26 00:00:00'::timestamp, '2026-06-26 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-06-27 00:00:00'::timestamp, '2026-06-27 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-06-30 00:00:00'::timestamp, '2026-06-30 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-07-24 00:00:00'::timestamp, '2026-07-24 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-07-25 00:00:00'::timestamp, '2026-07-25 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-07-26 00:00:00'::timestamp, '2026-07-26 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-07-27 00:00:00'::timestamp, '2026-07-27 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-07-30 00:00:00'::timestamp, '2026-07-30 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp),
 
-('V-202', 'Reserved', '2026-06-24 00:00:00'::timestamp, '2026-06-24 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-06-25 00:00:00'::timestamp, '2026-06-25 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-06-26 00:00:00'::timestamp, '2026-06-26 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-06-27 00:00:00'::timestamp, '2026-06-27 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-06-30 00:00:00'::timestamp, '2026-06-30 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-07-05 00:00:00'::timestamp, '2026-07-05 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-07-24 00:00:00'::timestamp, '2026-07-24 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-07-25 00:00:00'::timestamp, '2026-07-25 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-07-26 00:00:00'::timestamp, '2026-07-26 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-07-27 00:00:00'::timestamp, '2026-07-27 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-07-30 00:00:00'::timestamp, '2026-07-30 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-08-05 00:00:00'::timestamp, '2026-08-05 23:59:00'::timestamp),
 
-('V-203', 'Reserved', '2026-06-24 00:00:00'::timestamp, '2026-06-24 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-06-25 00:00:00'::timestamp, '2026-06-25 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-06-26 00:00:00'::timestamp, '2026-06-26 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-06-27 00:00:00'::timestamp, '2026-06-27 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-06-30 00:00:00'::timestamp, '2026-06-30 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-07-24 00:00:00'::timestamp, '2026-07-24 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-07-25 00:00:00'::timestamp, '2026-07-25 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-07-26 00:00:00'::timestamp, '2026-07-26 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-07-27 00:00:00'::timestamp, '2026-07-27 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-07-30 00:00:00'::timestamp, '2026-07-30 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp),
 
-('V-204', 'Reserved', '2026-06-24 00:00:00'::timestamp, '2026-06-24 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-06-25 00:00:00'::timestamp, '2026-06-25 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-06-26 00:00:00'::timestamp, '2026-06-26 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-06-27 00:00:00'::timestamp, '2026-06-27 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-06-30 00:00:00'::timestamp, '2026-06-30 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp);
+('V-204', 'Reserved', '2026-07-24 00:00:00'::timestamp, '2026-07-24 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-07-25 00:00:00'::timestamp, '2026-07-25 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-07-26 00:00:00'::timestamp, '2026-07-26 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-07-27 00:00:00'::timestamp, '2026-07-27 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-07-30 00:00:00'::timestamp, '2026-07-30 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp);
 
 -- =========================================================
 -- INDIVIDUAL AVAILABILITY
 -- =========================================================
 INSERT INTO individual_availability (individual_id, reason, not_available_from, not_available_to)
-SELECT individual_id, 'Medical leave', '2026-06-27 07:00:00'::timestamp, '2026-06-27 18:00:00'::timestamp
+SELECT individual_id, 'Medical leave', '2026-07-27 07:00:00'::timestamp, '2026-07-27 18:00:00'::timestamp
 FROM individuals WHERE name = 'Ravi'
 UNION ALL
-SELECT individual_id, 'Blocked during travel window', '2026-07-06 07:37:00'::timestamp, '2026-07-06 08:00:00'::timestamp
+SELECT individual_id, 'Blocked during travel window', '2026-08-06 07:37:00'::timestamp, '2026-08-06 08:00:00'::timestamp
 FROM individuals WHERE name = 'Ali';
 INSERT INTO individual_availability (individual_id, reason, not_available_from, not_available_to)
-SELECT individual_id, 'Personal leave', '2026-06-30 08:00:00'::timestamp, '2026-06-30 11:30:00'::timestamp
+SELECT individual_id, 'Personal leave', '2026-07-30 08:00:00'::timestamp, '2026-07-30 11:30:00'::timestamp
 FROM individuals WHERE name = 'Sara';
 
 INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
-('V-102', 'Scheduled Inspection', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp);
+('V-102', 'Scheduled Inspection', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp);
 
 INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
-('V-205', 'Reserved', '2026-07-02 00:00:00'::timestamp, '2026-07-02 23:59:00'::timestamp),
-('V-205', 'Reserved', '2026-07-03 00:00:00'::timestamp, '2026-07-03 23:59:00'::timestamp);
+('V-205', 'Reserved', '2026-08-02 00:00:00'::timestamp, '2026-08-02 23:59:00'::timestamp),
+('V-205', 'Reserved', '2026-08-03 00:00:00'::timestamp, '2026-08-03 23:59:00'::timestamp);
 
 -- New plan
 INSERT INTO plans (plan_name, num_of_vehicles, default_start_time, total_fuel)
@@ -265,19 +265,19 @@ FROM plans WHERE plan_name = 'Combo Round Trip Test Plan';
 
 -- Block V-102 on 10-Jul (conflict)
 INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to)
-VALUES ('V-102', 'Maintenance', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp);
+VALUES ('V-102', 'Maintenance', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp);
 
 -- Block everything except V-100 and V-103 on 10-Jul
 INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, not_available_to) VALUES
-('V-101', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-104', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-105', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-200', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-201', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-202', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-203', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-204', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp),
-('V-205', 'Reserved', '2026-07-10 00:00:00'::timestamp, '2026-07-10 23:59:00'::timestamp);
+('V-101', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-104', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-105', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-200', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-201', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-202', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-203', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-204', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp),
+('V-205', 'Reserved', '2026-08-10 00:00:00'::timestamp, '2026-08-10 23:59:00'::timestamp);
 
 
 
@@ -285,16 +285,16 @@ INSERT INTO vehicle_availability (vehicle_number, reason, not_available_from, no
 VALUES (
     'V-100',
     'Assigned to Fuel Conflict Tests Plan',
-    '2026-07-15 08:00:00'::timestamp,
-    '2026-07-15 12:00:00'::timestamp
+    '2026-08-15 08:00:00'::timestamp,
+    '2026-08-15 12:00:00'::timestamp
 );
 
 -- John blocked by a low-priority plan assignment on 2026-07-15
 INSERT INTO individual_availability (individual_id, reason, not_available_from, not_available_to)
 SELECT individual_id,
        'Assigned to Fuel Conflict Tests Plan',
-       '2026-07-15 08:00:00'::timestamp,
-       '2026-07-15 12:00:00'::timestamp
+       '2026-08-15 08:00:00'::timestamp,
+       '2026-08-15 12:00:00'::timestamp
 FROM individuals WHERE name = 'John';
 
 UPDATE plans SET priority = 'low' WHERE plan_name = 'Fuel Conflict Tests Plan';

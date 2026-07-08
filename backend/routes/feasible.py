@@ -618,7 +618,6 @@ def run_scheduler(plan_id, date_str, time_str):
             "trip_id":      tid,
             "actual_start": actual_start.isoformat(),
             "actual_end":   actual_end.isoformat(),
-            "sequenced":    False
         })
 
         # ── Vehicle ──
