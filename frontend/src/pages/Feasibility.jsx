@@ -3,6 +3,7 @@ import { fetchPlans, checkFeasibility } from "../api/plans";
 
 const BASE = "http://localhost:5000";
 import ConflictTable from "../components/ConflictTable";
+import CommittedRunPanel from "../components/CommitedRunPanel";
 
 export default function Feasibility() {
   const [plans, setPlans] = useState([]);
@@ -17,9 +18,32 @@ export default function Feasibility() {
   const [committingFeasible, setCommittingFeasible] = useState(false);
   const [commitResult, setCommitResult] = useState(null);
 
+  // ── Committed-run view state ──
+  const [committedRun, setCommittedRun] = useState(null);
+  const [committedRunLoading, setCommittedRunLoading] = useState(false);
+  const [viewingCommitted, setViewingCommitted] = useState(false);
+
   useEffect(() => {
     fetchPlans().then(setPlans);
   }, []);
+
+  // Fetches the committed run for a plan+date and returns the parsed JSON
+  // directly (in addition to setting state), so callers that need the
+  // value immediately (e.g. handleCheck's same-time comparison) don't have
+  // to re-fetch or rely on a state update that hasn't flushed yet.
+  const fetchCommittedRun = async (planId, dateStr) => {
+    setCommittedRunLoading(true);
+    let json = null;
+    try {
+      const res = await fetch(`${BASE}/api/plans/${planId}/scheduled-run?date=${dateStr}`);
+      json = res.ok ? await res.json() : null;
+      setCommittedRun(json);
+    } catch {
+      setCommittedRun(null);
+    }
+    setCommittedRunLoading(false);
+    return json;
+  };
 
   const handleCheck = async () => {
     if (!selectedPlan || !date) return;
@@ -27,6 +51,7 @@ export default function Feasibility() {
     setCanCommit(false);
     setRunExists(false);
     setCommitResult(null);
+    setViewingCommitted(false);
 
     const data = await checkFeasibility(selectedPlan, date, time || null);
     setResult(data);
@@ -43,6 +68,27 @@ export default function Feasibility() {
       const json = await res.json();
       setCanCommit(json.can_commit);
       setRunExists(json.run_id_exists);
+
+      if (json.run_id_exists) {
+        // A run already exists for this plan+date. Fetch it and check
+        // whether it was committed at the SAME time the user just entered
+        // (or, if they left the time blank, the plan's default start
+        // time — matching the fallback rule the backend itself uses in
+        // fetch_plan_data). Only auto-jump to the committed view when the
+        // times actually match; otherwise stay on the feasibility check
+        // so the user can see conflicts for this different time slot.
+        const runJson = await fetchCommittedRun(selectedPlan, date);
+
+        const plan = plans.find(p => String(p.plan_id) === String(selectedPlan));
+        const enteredTime   = time || (plan?.default_start_time?.slice(0, 5) ?? "");
+        const committedTime = runJson?.committed_time ?? "";
+
+        const sameSlot = enteredTime !== "" && enteredTime === committedTime;
+
+        if (sameSlot) {
+          setViewingCommitted(true);
+        }
+      }
     } catch {
       setCanCommit(false);
     }
@@ -64,6 +110,8 @@ export default function Feasibility() {
       if (res.ok) {
         setCommitResult({ success: true, run_id: json.run_id, trips_saved: json.trips_saved, type: "replacement" });
         setRunExists(true);
+        await fetchCommittedRun(selectedPlan, date);
+        setViewingCommitted(true);
       } else {
         setCommitResult({ success: false, error: json.error || "Commit failed." });
       }
@@ -94,6 +142,8 @@ export default function Feasibility() {
       if (res.ok) {
         setCommitResult({ success: true, run_id: json.run_id, trips_saved: json.trips_saved, type: "feasible" });
         setRunExists(true);
+        await fetchCommittedRun(selectedPlan, date);
+        setViewingCommitted(true);
       } else {
         setCommitResult({ success: false, error: json.error || "Commit failed." });
       }
@@ -101,6 +151,18 @@ export default function Feasibility() {
       setCommitResult({ success: false, error: "Network error." });
     }
     setCommittingFeasible(false);
+  };
+
+  const handleViewCommitted = async () => {
+    await fetchCommittedRun(selectedPlan, date);
+    setViewingCommitted(true);
+  };
+
+  const resetOnInputChange = () => {
+    setResult(null);
+    setCanCommit(false);
+    setCommitResult(null);
+    setViewingCommitted(false);
   };
 
   return (
@@ -122,7 +184,7 @@ export default function Feasibility() {
           <label style={labelStyle}>Operation</label>
           <select
             value={selectedPlan}
-            onChange={e => { setSelectedPlan(e.target.value); setResult(null); setCanCommit(false); setCommitResult(null); }}
+            onChange={e => { setSelectedPlan(e.target.value); resetOnInputChange(); }}
             style={inputStyle}
           >
             <option value="">Select a plan</option>
@@ -135,7 +197,7 @@ export default function Feasibility() {
           <label style={labelStyle}>Date</label>
           <input
             type="date" value={date}
-            onChange={e => { setDate(e.target.value); setResult(null); setCanCommit(false); setCommitResult(null); }}
+            onChange={e => { setDate(e.target.value); resetOnInputChange(); }}
             style={inputStyle}
           />
         </div>
@@ -143,7 +205,7 @@ export default function Feasibility() {
           <label style={labelStyle}>Start Time (optional)</label>
           <input
             type="time" value={time}
-            onChange={e => { setTime(e.target.value); setResult(null); setCanCommit(false); setCommitResult(null); }}
+            onChange={e => { setTime(e.target.value); resetOnInputChange(); }}
             style={inputStyle}
           />
         </div>
@@ -164,138 +226,151 @@ export default function Feasibility() {
       {/* Result */}
       {result && (
         <>
-          {/* Status bar + Commit button */}
-          <div style={{
-            display: "flex", alignItems: "center", justifyContent: "space-between",
-            gap: "12px", marginBottom: "24px", padding: "16px 24px",
-            borderRadius: "8px",
-            background: result.feasible ? "#f0faf4" : "#fff5f5",
-            border: `1px solid ${result.feasible ? "#b2dfcc" : "#ffc0c0"}`
-          }}>
-            <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          {viewingCommitted ? (
+            <CommittedRunPanel
+              data={committedRun}
+              loading={committedRunLoading}
+              onBack={() => setViewingCommitted(false)}
+            />
+          ) : (
+            <>
+              {/* Status bar */}
               <div style={{
-                width: "10px", height: "10px", borderRadius: "50%",
-                background: result.feasible ? "#2e7d52" : "#c0392b", flexShrink: 0
-              }} />
-              <span style={{ fontWeight: 600, fontSize: "15px", color: result.feasible ? "#2e7d52" : "#c0392b" }}>
-                {result.feasible
-                  ? "Plan is feasible — no conflicts detected"
-                  : `Plan is not feasible — ${result.conflicts.length} conflict(s) found`}
-              </span>
-            </div>
-
-
-          </div>
-
-          {/* Commit feedback */}
-          {commitResult && (
-            <div style={{
-              marginBottom: "20px", padding: "14px 20px", borderRadius: "8px",
-              background: commitResult.success ? "#f0faf4" : "#fff5f5",
-              border: `1px solid ${commitResult.success ? "#b2dfcc" : "#ffc0c0"}`,
-              fontSize: "14px", fontWeight: 600,
-              color: commitResult.success ? "#2e7d52" : "#c0392b",
-            }}>
-              {commitResult.success
-                ? commitResult.type === "feasible"
-                  ? `✓ Run committed at feasible times — ${commitResult.trips_saved} trip(s) saved (Run #${commitResult.run_id})`
-                  : `✓ Run committed with replacements — ${commitResult.trips_saved} trip(s) saved (Run #${commitResult.run_id})`
-                : `✗ ${commitResult.error}`}
-            </div>
-          )}
-
-          <ConflictTable
-            conflicts={result.conflicts}
-            resolutions={result.resolutions?.resolutions ?? result.resolutions}
-            feasibleTimes={result.resolutions?.next_feasible_times ?? []}
-          />
-
-          {/* ── Commit with Replacements — only when every conflict is resolved ── */}
-          {canCommit && !commitResult?.success && (
-            <div style={{
-              marginTop: "28px",
-              padding: "20px 24px",
-              borderRadius: "8px",
-              background: "#f0faf4",
-              border: "1px solid #b2dfcc",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-            }}>
-              <div>
-                <p style={{ margin: 0, fontWeight: 600, fontSize: "14px", color: "#2e7d52" }}>
-                  Commit with suggested replacements
-                </p>
-                <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>
-                  Saves the run using the replacement vehicles and personnel found above.
-                </p>
-                {runExists && (
-                  <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#e67e22", fontWeight: 500 }}>
-                    ⚠ Replaces the existing run for this date
-                  </p>
-                )}
-              </div>
-              <button
-                onClick={handleCommit}
-                disabled={committing}
-                style={{
-                  background: committing ? "#888" : "#2e7d52",
-                  color: "#fff", border: "none", padding: "10px 28px",
-                  borderRadius: "6px", fontSize: "14px", fontWeight: 600,
-                  cursor: committing ? "not-allowed" : "pointer", whiteSpace: "nowrap",
-                  flexShrink: 0, marginLeft: "24px",
-                }}
-              >
-                {committing ? "Committing..." : "Commit with Replacements"}
-              </button>
-            </div>
-          )}
-
-          {/* ── Commit at Next Feasible Time — shown when there are feasible times available ── */}
-          {(() => {
-            const feasibleTimes = result.resolutions?.next_feasible_times ?? [];
-            const allFeasible   = feasibleTimes.length > 0 && feasibleTimes.every(ft => !!ft.feasible_start);
-            if (!allFeasible || commitResult?.success) return null;
-            return (
-              <div style={{
-                marginTop: "16px",
-                padding: "20px 24px",
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                gap: "12px", marginBottom: "24px", padding: "16px 24px",
                 borderRadius: "8px",
-                background: "#f0f5ff",
-                border: "1px solid #b3c8f5",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
+                background: result.feasible ? "#f0faf4" : "#fff5f5",
+                border: `1px solid ${result.feasible ? "#b2dfcc" : "#ffc0c0"}`
               }}>
-                <div>
-                  <p style={{ margin: 0, fontWeight: 600, fontSize: "14px", color: "#1a6eb5" }}>
-                    Commit at next feasible times
-                  </p>
-                  <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>
-                    Conflicted trips shift to their earliest feasible start. Original vehicles and crew are kept — no replacements.
-                  </p>
-                  {runExists && (
-                    <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#e67e22", fontWeight: 500 }}>
-                      ⚠ Replaces the existing run for this date
-                    </p>
-                  )}
+                <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                  <div style={{
+                    width: "10px", height: "10px", borderRadius: "50%",
+                    background: result.feasible ? "#2e7d52" : "#c0392b", flexShrink: 0
+                  }} />
+                  <span style={{ fontWeight: 600, fontSize: "15px", color: result.feasible ? "#2e7d52" : "#c0392b" }}>
+                    {result.feasible
+                      ? "Plan is feasible — no conflicts detected"
+                      : `Plan is not feasible — ${result.conflicts.length} conflict(s) found`}
+                  </span>
                 </div>
-                <button
-                  onClick={handleCommitFeasible}
-                  disabled={committingFeasible}
-                  style={{
-                    background: committingFeasible ? "#888" : "#1a6eb5",
-                    color: "#fff", border: "none", padding: "10px 28px",
-                    borderRadius: "6px", fontSize: "14px", fontWeight: 600,
-                    cursor: committingFeasible ? "not-allowed" : "pointer", whiteSpace: "nowrap",
-                    flexShrink: 0, marginLeft: "24px",
-                  }}
-                >
-                  {committingFeasible ? "Committing..." : "Commit at Feasible Time"}
-                </button>
               </div>
-            );
-          })()}
+
+              {/* Existing-run notice (shown when a run exists but for a
+                  DIFFERENT time than what was just entered) */}
+              {runExists && !commitResult?.success && (
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  marginBottom: "20px", padding: "14px 20px", borderRadius: "8px",
+                  background: "#fff8ec", border: "1px solid #f0d9a8",
+                }}>
+                  <span style={{ fontSize: "13px", color: "#8a6d1e", fontWeight: 500 }}>
+                    A run already exists for this plan on this date.
+                  </span>
+                  <button onClick={handleViewCommitted} style={{
+                    background: "transparent", border: "1px solid #8a6d1e", color: "#8a6d1e",
+                    padding: "6px 14px", borderRadius: "6px", fontSize: "13px",
+                    fontWeight: 600, cursor: "pointer"
+                  }}>
+                    View Committed Run
+                  </button>
+                </div>
+              )}
+
+              {/* Commit feedback */}
+              {commitResult && !commitResult.success && (
+                <div style={{
+                  marginBottom: "20px", padding: "14px 20px", borderRadius: "8px",
+                  background: "#fff5f5", border: "1px solid #ffc0c0",
+                  fontSize: "14px", fontWeight: 600, color: "#c0392b",
+                }}>
+                  ✗ {commitResult.error}
+                </div>
+              )}
+
+              <ConflictTable
+                conflicts={result.conflicts}
+                resolutions={result.resolutions?.resolutions ?? result.resolutions}
+                feasibleTimes={result.resolutions?.next_feasible_times ?? []}
+              />
+
+              {/* ── Commit with Replacements ── */}
+              {canCommit && (
+                <div style={{
+                  marginTop: "28px", padding: "20px 24px", borderRadius: "8px",
+                  background: "#f0faf4", border: "1px solid #b2dfcc",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                }}>
+                  <div>
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: "14px", color: "#2e7d52" }}>
+                      Commit with suggested replacements
+                    </p>
+                    <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>
+                      Saves the run using the replacement vehicles and personnel found above.
+                    </p>
+                    {runExists && (
+                      <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#e67e22", fontWeight: 500 }}>
+                        ⚠ Replaces the existing run for this date
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleCommit}
+                    disabled={committing}
+                    style={{
+                      background: committing ? "#888" : "#2e7d52",
+                      color: "#fff", border: "none", padding: "10px 28px",
+                      borderRadius: "6px", fontSize: "14px", fontWeight: 600,
+                      cursor: committing ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+                      flexShrink: 0, marginLeft: "24px",
+                    }}
+                  >
+                    {committing ? "Committing..." : "Commit with Replacements"}
+                  </button>
+                </div>
+              )}
+
+              {/* ── Commit at Next Feasible Time ── */}
+              {(() => {
+                const feasibleTimes = result.resolutions?.next_feasible_times ?? [];
+                const allFeasible   = feasibleTimes.length > 0 && feasibleTimes.every(ft => !!ft.feasible_start);
+                if (!allFeasible) return null;
+                return (
+                  <div style={{
+                    marginTop: "16px", padding: "20px 24px", borderRadius: "8px",
+                    background: "#f0f5ff", border: "1px solid #b3c8f5",
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                  }}>
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 600, fontSize: "14px", color: "#1a6eb5" }}>
+                        Commit at next feasible times
+                      </p>
+                      <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#666" }}>
+                        Conflicted trips shift to their earliest feasible start. Original vehicles and crew are kept — no replacements.
+                      </p>
+                      {runExists && (
+                        <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#e67e22", fontWeight: 500 }}>
+                          ⚠ Replaces the existing run for this date
+                        </p>
+                      )}
+                    </div>
+                    <button
+                      onClick={handleCommitFeasible}
+                      disabled={committingFeasible}
+                      style={{
+                        background: committingFeasible ? "#888" : "#1a6eb5",
+                        color: "#fff", border: "none", padding: "10px 28px",
+                        borderRadius: "6px", fontSize: "14px", fontWeight: 600,
+                        cursor: committingFeasible ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+                        flexShrink: 0, marginLeft: "24px",
+                      }}
+                    >
+                      {committingFeasible ? "Committing..." : "Commit at Feasible Time"}
+                    </button>
+                  </div>
+                );
+              })()}
+            </>
+          )}
         </>
       )}
     </div>

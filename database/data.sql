@@ -298,3 +298,18 @@ SELECT individual_id,
 FROM individuals WHERE name = 'John';
 
 UPDATE plans SET priority = 'low' WHERE plan_name = 'Fuel Conflict Tests Plan';
+
+-- =========================================================
+-- TRIP CREW — Fuel Conflict Tests Plan
+-- =========================================================
+INSERT INTO trip_crew (trip_id, individual_id)
+SELECT t.trip_id, i.individual_id
+FROM trips t, individuals i
+WHERE t.plan_id = (SELECT plan_id FROM plans WHERE plan_name = 'Fuel Conflict Tests Plan')
+AND (
+    (t.vehicle_number = 'V-200' AND i.name IN ('John','Sara')) OR
+    (t.vehicle_number = 'V-201' AND i.name IN ('Mike','Ayesha')) OR
+    (t.vehicle_number = 'V-205' AND i.name IN ('Ali','Omar')) OR
+    (t.vehicle_number = 'V-203' AND i.name IN ('Ravi')) OR
+    (t.vehicle_number = 'V-204' AND i.name IN ('Ravi'))
+);

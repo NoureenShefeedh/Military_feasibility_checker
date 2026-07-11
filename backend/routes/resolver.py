@@ -1172,7 +1172,7 @@ def find_next_feasible_start(
     vehicle,            # dict: vehicle_number, current_location, speed, current_fuel,
                          #       fuel_capacity, fuel_consumption_rate, avail_windows
     crew,               # list[dict]: individual_id, name, current_location, avail_windows
-    max_days=30,
+    max_days=3,
 ):
     """
     Find the next feasible start time for THIS SAME trip using the SAME
@@ -1291,8 +1291,7 @@ def find_next_feasible_start(
                     break
         if shifted:
             continue
-
-        # ── 5. Vehicle fuel ──
+# ── 5. Vehicle fuel ──
         fuel_conflict = check_vehicle_fuel(
             vehicle["current_location"], trip_start_loc, trip_end_loc,
             vehicle["current_fuel"], vehicle["fuel_capacity"],
@@ -1301,20 +1300,18 @@ def find_next_feasible_start(
             vehicle["vehicle_number"], vehicle["avail_windows"]
         )
         if fuel_conflict:
-            # Fuel can't be resolved by waiting alone (it's about distance,
-            # not time) — refuelling adds a fixed delay, so nudge forward by
-            # the standard fill time and try again rather than giving up.
-            candidate    = candidate + timedelta(minutes=FUEL_FILL_TIME_MINS)
-            last_blocker = f"Vehicle {vehicle['vehicle_number']} (insufficient fuel)"
-            shifted      = True
-            continue
+            return {
+                "feasible_start": None, "feasible_end": None,
+                "shifted_by": None,
+                "blocked_by": f"Vehicle {vehicle['vehicle_number']} (insufficient fuel)",
+            }
 
         # ── Everything passed — this candidate works ──
         return {
             "feasible_start": candidate,
             "feasible_end":   candidate_end,
             "shifted_by":     candidate - original_start,
-            "blocked_by":     last_blocker,  # last thing that forced a shift, or None
+            "blocked_by":     last_blocker,
         }
 
     # Exceeded the cap without finding a feasible time.
@@ -1323,7 +1320,6 @@ def find_next_feasible_start(
         "shifted_by": cap_deadline - original_start,
         "blocked_by": last_blocker,
     }
-
 
 # ─────────────────────────────────────────────
 # MAIN ENTRY POINT

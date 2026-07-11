@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from datetime import datetime
+from datetime import datetime, timedelta
 from db import get_connection
 from routes.feasible import run_scheduler, fetch_plan_data
 from routes.resolver import resolve_conflicts
@@ -295,3 +295,110 @@ def commit_scheduled_run(plan_id):
         return jsonify(saved), 201
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+@plans_bp.route('/api/plans/<int:plan_id>/scheduled-run', methods=['GET'])
+def get_scheduled_run(plan_id):
+    from collections import Counter
+
+    date_str = request.args.get("date")
+    if not date_str:
+        return jsonify({"error": "date is required"}), 400
+
+    try:
+        run_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+    except ValueError:
+        return jsonify({"error": "date must be YYYY-MM-DD"}), 400
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                SELECT run_id, created_at FROM public.scheduled_runs
+                WHERE plan_id = %s AND run_date = %s
+                LIMIT 1
+            """, (plan_id, run_date))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"exists": False})
+
+            run_id, created_at = row
+
+            # NOTE: added t.start_offset here so we can derive the run's
+            # committed base time below (see committed_time calculation).
+            cur.execute("""
+                SELECT
+                    srt.trip_id, srt.actual_start, srt.actual_end,
+                    srt.vehicle_number, v.vehicle_name,
+                    srt.individual_ids, srt.resolution_data,
+                    r.start_location_id, l1.location_name,
+                    r.end_location_id,   l2.location_name,
+                    t.start_offset
+                FROM public.scheduled_run_trips srt
+                JOIN public.vehicles  v  ON v.vehicle_number = srt.vehicle_number
+                JOIN public.trips     t  ON t.trip_id         = srt.trip_id
+                JOIN public.routes    r  ON r.route_id         = t.route_id
+                JOIN public.locations l1 ON l1.location_id     = r.start_location_id
+                JOIN public.locations l2 ON l2.location_id     = r.end_location_id
+                WHERE srt.run_id = %s
+                ORDER BY srt.actual_start
+            """, (run_id,))
+            trip_rows = cur.fetchall()
+
+            trips = []
+            base_t0_candidates = []
+
+            for (tid, astart, aend, vn, vname, iids, resolution_data,
+                 start_loc_id, start_loc_name, end_loc_id, end_loc_name,
+                 start_offset) in trip_rows:
+
+                crew_names = []
+                if iids:
+                    cur.execute("""
+                        SELECT name FROM public.individuals
+                        WHERE individual_id = ANY(%s)
+                    """, (iids,))
+                    crew_names = [r[0] for r in cur.fetchall()]
+
+                # Derive this trip's implied base_t0 = actual_start - start_offset.
+                # For trips that ran at their normal (unshifted) time, this
+                # equals the true committed base time. Trips that were shifted
+                # to a "next feasible start" will disagree — that's expected,
+                # they're outliers, not the majority.
+                offset_secs = (
+                    start_offset.hour * 3600 +
+                    start_offset.minute * 60 +
+                    start_offset.second
+                )
+                candidate_base_t0 = astart - timedelta(seconds=offset_secs)
+                base_t0_candidates.append(candidate_base_t0)
+
+                trips.append({
+                    "trip_id":         tid,
+                    "actual_start":    astart.isoformat(),
+                    "actual_end":      aend.isoformat(),
+                    "vehicle_number":  vn,
+                    "vehicle_name":    vname,
+                    "crew":            crew_names,
+                    "from_location":   start_loc_name,
+                    "to_location":     end_loc_name,
+                    "resolution_data": resolution_data or {},
+                })
+        finally:
+            cur.close()
+    finally:
+        conn.close()
+
+    # Majority vote across trips to find the actual committed base time.
+    committed_time_str = None
+    if base_t0_candidates:
+        counts = Counter(base_t0_candidates)
+        most_common_base_t0, _ = counts.most_common(1)[0]
+        committed_time_str = most_common_base_t0.strftime("%H:%M")
+
+    return jsonify({
+        "exists":         True,
+        "run_id":         run_id,
+        "created_at":     created_at.isoformat(),
+        "committed_time": committed_time_str,   # "HH:MM" — NEW
+        "trips":          trips,
+    })

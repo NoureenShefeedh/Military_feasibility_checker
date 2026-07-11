@@ -29,6 +29,13 @@ ends up "unavailable" for two different plans at the same time, and the
 source plan's future feasibility checks would incorrectly still think it
 owns a resource it no longer has.
 
+3. RESOLUTION DATA. Each trip's full resolution snapshot (which strategy
+   was used, replacement resources, and for round trips every round's
+   depart/arrive time) is saved into scheduled_run_trips.resolution_data
+   (JSONB) at commit time. This is what lets the committed-run view later
+   show exactly what happened for each trip -- including round-by-round
+   timing -- without having to re-run the resolver.
+
 Public API
 ----------
 save_scheduled_run(plan_id, date_str, schedule, trip_map, resolutions)
@@ -39,6 +46,7 @@ can_commit_run(conflicts, resolutions)
 """
 
 from datetime import datetime, timedelta
+from psycopg2.extras import Json
 from db import get_connection
 from routes.feasible import fetch_distance, travel_time_secs, INDIVIDUAL_SPEED_KMH
 
@@ -505,7 +513,11 @@ def save_scheduled_run(
             full span through the last round.
          d. If either resource was POACHED from a lower-priority plan,
             delete that source plan's now-stale availability row for it.
-         e. Insert into scheduled_run_trips.
+         e. Insert into scheduled_run_trips, including a JSONB snapshot of
+            that trip's resolution (vehicle/individual replacement info
+            and, for round trips, every round's depart/arrive time) so
+            the committed-run view can show it later without re-running
+            the resolver.
          f. Insert into individual_availability for every crew member.
          g. Insert into vehicle_availability for every assigned vehicle.
 
@@ -596,12 +608,19 @@ def save_scheduled_run(
                 trip_id, vehicle_windows, individual_windows, resolution_index, cur
             )
 
-            # 4c. Persist the scheduled trip row.
+            # 4c. Persist the scheduled trip row, including the resolution
+            #     snapshot (vehicle/individual replacement + round-by-round
+            #     timing for round trips) so it can be read back later.
+            trip_resolution = resolution_index.get(trip_id, {})
             cur.execute("""
                 INSERT INTO public.scheduled_run_trips
-                    (run_id, trip_id, actual_start, actual_end, vehicle_number, individual_ids)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (run_id, trip_id, actual_start, actual_end, final_vehicle, final_ids))
+                    (run_id, trip_id, actual_start, actual_end,
+                     vehicle_number, individual_ids, resolution_data)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (
+                run_id, trip_id, actual_start, actual_end,
+                final_vehicle, final_ids, Json(trip_resolution)
+            ))
 
             # 4d. Mark every crew member unavailable for their true busy window.
             for individual_id, busy_start, busy_end in individual_windows:
