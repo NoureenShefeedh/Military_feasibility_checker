@@ -1173,6 +1173,7 @@ def find_next_feasible_start(
                          #       fuel_capacity, fuel_consumption_rate, avail_windows
     crew,               # list[dict]: individual_id, name, current_location, avail_windows
     max_days=3,
+    min_start=None,     # datetime or None — see below
 ):
     """
     Find the next feasible start time for THIS SAME trip using the SAME
@@ -1194,6 +1195,16 @@ def find_next_feasible_start(
     vehicle             : dict     – The trip's assigned vehicle and its data.
     crew                : list[dict] – The trip's assigned crew and their data.
     max_days            : int      – Safety cap; give up after shifting this far.
+    min_start           : datetime or None
+        For CASCADE-DEPENDENT trips only: the earliest this trip is allowed
+        to start regardless of its own original schedule — i.e. the
+        feasible_end of the trip it depends on. The same vehicle/crew can't
+        run two trips at once, and cascade trips must preserve their
+        original order, so a dependent trip's search floor is
+        max(original_start, min_start) rather than original_start alone.
+        shifted_by is still measured against original_start (not the
+        floor), so it reflects the FULL delay, including any delay
+        inherited from the predecessor trip.
 
     Returns
     -------
@@ -1205,9 +1216,14 @@ def find_next_feasible_start(
                                           useful for explaining the result to the user.
     if infeasible within max_days, feasible_start/feasible_end are None.
     """
-    cap_deadline   = original_start + timedelta(days=max_days)
-    candidate      = original_start
-    last_blocker   = None
+    # Cascade trips can't start before their predecessor (in this same
+    # resolution) actually finishes — the search floor accounts for that,
+    # while shifted_by still measures the delay from the trip's own
+    # originally-scheduled start.
+    start_floor  = max(original_start, min_start) if min_start else original_start
+    cap_deadline = start_floor + timedelta(days=max_days)
+    candidate    = start_floor
+    last_blocker = None
 
     while candidate <= cap_deadline:
         candidate_end = candidate + timedelta(seconds=trip_duration_secs)
@@ -1291,7 +1307,8 @@ def find_next_feasible_start(
                     break
         if shifted:
             continue
-# ── 5. Vehicle fuel ──
+
+        # ── 5. Vehicle fuel ──
         fuel_conflict = check_vehicle_fuel(
             vehicle["current_location"], trip_start_loc, trip_end_loc,
             vehicle["current_fuel"], vehicle["fuel_capacity"],
@@ -1320,7 +1337,6 @@ def find_next_feasible_start(
         "shifted_by": cap_deadline - original_start,
         "blocked_by": last_blocker,
     }
-
 # ─────────────────────────────────────────────
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────
@@ -1716,13 +1732,40 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
     #   trip["fuel_consumption_rate"]  – vehicle's consumption rate
     #   trip["vehicle_speed"]          – matches, no change needed
     #   crew["current_location_id"]    – crew member's current location id
-    #   (there is no "actual_start" stored on the trip dict at all — it must
-    #    always be derived from base_t0 + start_offset_secs)
+    #
+    # ALSO IMPORTANT (bug fix): original_start for this second pass MUST be
+    # the exact same actual_start the FIRST pass used to detect the
+    # conflict — the same value shown to the user in the conflict table —
+    # not an independently recomputed base_t0 + start_offset_secs. Those two
+    # sources can drift out of sync (e.g. if trip_map's start_offset_secs no
+    # longer matches the offset that produced this conflict), and when they
+    # do, "shifted_by" ends up measured against the wrong baseline. That's
+    # what caused a trip which visibly shifted from 08:00am to 10:12am to
+    # still be reported as "No shift needed" — the recomputed original_start
+    # had silently already become 10:12am, so shifted_by = 10:12 - 10:12 = 0.
+    # Reusing the first pass's actual_start via conflict_actuals below keeps
+    # both the table and this section anchored to the same starting point.
 
     # NOTE: all_individual_avail is now fetched once, up in the main-loop
     # setup above, so it can be reused here in the second pass too (it was
     # previously fetched again down here; that duplicate fetch has been
     # removed to avoid two identical full-table queries).
+
+    # Build trip_id -> (actual_start, actual_end) exactly as detected in the
+    # first pass, so the second pass shifts from the SAME baseline the
+    # conflict table is built from, instead of recomputing it independently.
+    conflict_actuals = {}
+    for conflict in conflicts:
+        tid = conflict["trip_id"]
+        if tid in conflict_actuals:
+            continue
+        a_start = conflict["actual_start"]
+        a_end   = conflict["actual_end"]
+        if isinstance(a_start, str):
+            a_start = datetime.fromisoformat(a_start)
+        if isinstance(a_end, str):
+            a_end = datetime.fromisoformat(a_end)
+        conflict_actuals[tid] = (a_start, a_end)
 
     seen_trip_ids = set()
     conflicting_trip_ids = []
@@ -1750,15 +1793,22 @@ def resolve_conflicts(conflicts, plan_id, trip_map, base_t0):
         trip_end_loc   = trip.get("end_location_id")
         trip_dur_secs  = trip.get("duration_secs", 0)
 
-        # original_start is derived from base_t0 + start_offset_secs, exactly
-        # the same way run_scheduler() computes actual_start for every trip.
-        # start_offset_secs is ALREADY an integer number of seconds — do NOT
-        # treat it like a time/timedelta object.
-        offset_secs = trip.get("start_offset_secs")
-        if offset_secs is None:
-            original_start = None
-        else:
-            original_start = base_t0 + timedelta(seconds=offset_secs)
+        # original_start MUST be the same actual_start the first pass used
+        # to detect this conflict (i.e. what's shown in the conflict table),
+        # not an independently recomputed value — see note above. This is
+        # the fix for the "shows No shift needed even though it shifted" bug.
+        original_start, _existing_actual_end = conflict_actuals.get(trip_id, (None, None))
+
+        if original_start is None:
+            # Fallback for trips that somehow aren't in conflict_actuals
+            # (shouldn't normally happen, since conflicting_trip_ids is
+            # built from this same `conflicts` list). Derive from
+            # base_t0 + start_offset_secs, exactly as run_scheduler() does.
+            # start_offset_secs is ALREADY an integer number of seconds —
+            # do NOT treat it like a time/timedelta object.
+            offset_secs = trip.get("start_offset_secs")
+            if offset_secs is not None:
+                original_start = base_t0 + timedelta(seconds=offset_secs)
 
         if isinstance(original_start, str):
             original_start = datetime.fromisoformat(original_start)

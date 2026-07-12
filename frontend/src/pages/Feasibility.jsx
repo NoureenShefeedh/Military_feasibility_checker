@@ -293,8 +293,41 @@ export default function Feasibility() {
                 feasibleTimes={result.resolutions?.next_feasible_times ?? []}
               />
 
-              {/* ── Commit with Replacements ── */}
-              {canCommit && (
+              {/* ── Commit (plain) — plan has zero conflicts, nothing to replace ── */}
+              {canCommit && result.feasible && (
+                <div style={{
+                  marginTop: "28px", padding: "20px 24px", borderRadius: "8px",
+                  background: "#f0faf4", border: "1px solid #b2dfcc",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                }}>
+                  <div>
+                    <p style={{ margin: 0, fontWeight: 600, fontSize: "14px", color: "#2e7d52" }}>
+                      Commit this plan
+                    </p>
+                    {runExists && (
+                      <p style={{ margin: "4px 0 0", fontSize: "12px", color: "#e67e22", fontWeight: 500 }}>
+                        ⚠ Replaces the existing run for this date
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleCommit}
+                    disabled={committing}
+                    style={{
+                      background: committing ? "#888" : "#2e7d52",
+                      color: "#fff", border: "none", padding: "10px 28px",
+                      borderRadius: "6px", fontSize: "14px", fontWeight: 600,
+                      cursor: committing ? "not-allowed" : "pointer", whiteSpace: "nowrap",
+                      flexShrink: 0, marginLeft: "24px",
+                    }}
+                  >
+                    {committing ? "Committing..." : "Commit"}
+                  </button>
+                </div>
+              )}
+
+              {/* ── Commit with Replacements — plan had conflicts that were resolved ── */}
+              {canCommit && !result.feasible && (
                 <div style={{
                   marginTop: "28px", padding: "20px 24px", borderRadius: "8px",
                   background: "#f0faf4", border: "1px solid #b2dfcc",
@@ -329,8 +362,8 @@ export default function Feasibility() {
                 </div>
               )}
 
-              {/* ── Commit at Next Feasible Time ── */}
-              {(() => {
+              {/* ── Commit at Next Feasible Time — only relevant when there were conflicts ── */}
+              {!result.feasible && (() => {
                 const feasibleTimes = result.resolutions?.next_feasible_times ?? [];
                 const allFeasible   = feasibleTimes.length > 0 && feasibleTimes.every(ft => !!ft.feasible_start);
                 if (!allFeasible) return null;

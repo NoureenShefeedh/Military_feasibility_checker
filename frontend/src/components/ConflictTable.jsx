@@ -204,7 +204,7 @@ function ShiftedByLabel({ shiftedBy }) {
     totalSecs = shiftedBy;
   } else if (typeof shiftedBy === "string") {
     // Try parsing "HH:MM:SS" (Python timedelta.__str__) first.
-    const hms = shiftedBy.match(/^(\d+):(\d{2}):(\d{2})$/);
+    const hms = shiftedBy.match(/^(\d+):(\d{2}):(\d{2})(?:\.\d+)?$/);
     if (hms) {
       totalSecs = parseInt(hms[1]) * 3600 + parseInt(hms[2]) * 60 + parseInt(hms[3]);
     } else {
