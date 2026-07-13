@@ -5,5 +5,5 @@ def get_connection():
         host="localhost",
         database="military_planner",
         user="postgres",
-        password="noureen5"
+        password="your_password_here"
     )
