@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict Wz70pCGj53rmfCDQqRmPTnmUZuYceaRIEvDTAjgXkHviFXuYcejmc4axwy8kSbS
+\restrict DpsZIc5aRDdKa1Se00SJWvBQJsupl2XwDqFhgyznTuj3wij0pUa0eUC2PTyGOhE
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4
 
--- Started on 2026-06-09 12:38:55
+-- Started on 2026-07-13 14:41:26
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -20,6 +20,42 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- TOC entry 922 (class 1247 OID 33007)
+-- Name: plan_priority; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.plan_priority AS ENUM (
+    'low',
+    'medium',
+    'high'
+);
+
+
+ALTER TYPE public.plan_priority OWNER TO postgres;
+
+--
+-- TOC entry 250 (class 1255 OID 33183)
+-- Name: cleanup_expired_availability(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.cleanup_expired_availability() RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+
+BEGIN
+
+  DELETE FROM vehicle_availability WHERE not_available_to <= NOW();
+
+  DELETE FROM individual_availability WHERE not_available_to <= NOW();
+
+END;
+
+$$;
+
+
+ALTER FUNCTION public.cleanup_expired_availability() OWNER TO postgres;
 
 SET default_tablespace = '';
 
@@ -55,7 +91,7 @@ CREATE SEQUENCE public.crew_types_crew_type_id_seq
 ALTER SEQUENCE public.crew_types_crew_type_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5131 (class 0 OID 0)
+-- TOC entry 5172 (class 0 OID 0)
 -- Dependencies: 227
 -- Name: crew_types_crew_type_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -96,7 +132,7 @@ CREATE SEQUENCE public.individual_availability_availability_id_seq
 ALTER SEQUENCE public.individual_availability_availability_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5132 (class 0 OID 0)
+-- TOC entry 5173 (class 0 OID 0)
 -- Dependencies: 240
 -- Name: individual_availability_availability_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -136,7 +172,7 @@ CREATE SEQUENCE public.individuals_individual_id_seq
 ALTER SEQUENCE public.individuals_individual_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5133 (class 0 OID 0)
+-- TOC entry 5174 (class 0 OID 0)
 -- Dependencies: 229
 -- Name: individuals_individual_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -179,7 +215,7 @@ CREATE SEQUENCE public.load_types_load_type_id_seq
 ALTER SEQUENCE public.load_types_load_type_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5134 (class 0 OID 0)
+-- TOC entry 5175 (class 0 OID 0)
 -- Dependencies: 233
 -- Name: load_types_load_type_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -196,7 +232,8 @@ CREATE TABLE public.locations (
     location_id integer NOT NULL,
     location_name character varying(100) NOT NULL,
     latitude numeric(10,8) NOT NULL,
-    longitude numeric(11,8) NOT NULL
+    longitude numeric(11,8) NOT NULL,
+    has_fuel_station boolean DEFAULT false
 );
 
 
@@ -219,7 +256,7 @@ CREATE SEQUENCE public.locations_location_id_seq
 ALTER SEQUENCE public.locations_location_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5135 (class 0 OID 0)
+-- TOC entry 5176 (class 0 OID 0)
 -- Dependencies: 221
 -- Name: locations_location_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -237,7 +274,8 @@ CREATE TABLE public.plans (
     plan_name character varying(100) NOT NULL,
     num_of_vehicles integer NOT NULL,
     default_start_time time without time zone CONSTRAINT plans_earliest_start_time_not_null NOT NULL,
-    total_fuel numeric(12,2)
+    total_fuel numeric(12,2),
+    priority public.plan_priority DEFAULT 'medium'::public.plan_priority NOT NULL
 );
 
 
@@ -260,7 +298,7 @@ CREATE SEQUENCE public.plans_plan_id_seq
 ALTER SEQUENCE public.plans_plan_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5136 (class 0 OID 0)
+-- TOC entry 5177 (class 0 OID 0)
 -- Dependencies: 235
 -- Name: plans_plan_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -301,12 +339,142 @@ CREATE SEQUENCE public.routes_route_id_seq
 ALTER SEQUENCE public.routes_route_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5137 (class 0 OID 0)
+-- TOC entry 5178 (class 0 OID 0)
 -- Dependencies: 231
 -- Name: routes_route_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.routes_route_id_seq OWNED BY public.routes.route_id;
+
+
+--
+-- TOC entry 249 (class 1259 OID 57564)
+-- Name: scheduled_run_trip_rounds; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.scheduled_run_trip_rounds (
+    round_row_id integer NOT NULL,
+    scheduled_run_trip_id integer NOT NULL,
+    vehicle_number character varying(50),
+    load_share numeric(10,2),
+    fuel_cost numeric(10,2),
+    round_number integer NOT NULL,
+    load numeric(10,2),
+    depart_start timestamp without time zone NOT NULL,
+    arrive_end timestamp without time zone NOT NULL,
+    refuel_note character varying(200)
+);
+
+
+ALTER TABLE public.scheduled_run_trip_rounds OWNER TO postgres;
+
+--
+-- TOC entry 248 (class 1259 OID 57563)
+-- Name: scheduled_run_trip_rounds_round_row_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.scheduled_run_trip_rounds_round_row_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.scheduled_run_trip_rounds_round_row_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5179 (class 0 OID 0)
+-- Dependencies: 248
+-- Name: scheduled_run_trip_rounds_round_row_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.scheduled_run_trip_rounds_round_row_id_seq OWNED BY public.scheduled_run_trip_rounds.round_row_id;
+
+
+--
+-- TOC entry 247 (class 1259 OID 33203)
+-- Name: scheduled_run_trips; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.scheduled_run_trips (
+    scheduled_run_trip_id integer NOT NULL,
+    run_id integer NOT NULL,
+    trip_id integer NOT NULL,
+    actual_start timestamp without time zone NOT NULL,
+    actual_end timestamp without time zone NOT NULL,
+    vehicle_number character varying(50) NOT NULL,
+    individual_ids integer[] NOT NULL,
+    resolution_data jsonb
+);
+
+
+ALTER TABLE public.scheduled_run_trips OWNER TO postgres;
+
+--
+-- TOC entry 246 (class 1259 OID 33202)
+-- Name: scheduled_run_trips_scheduled_run_trip_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.scheduled_run_trips_scheduled_run_trip_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.scheduled_run_trips_scheduled_run_trip_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5180 (class 0 OID 0)
+-- Dependencies: 246
+-- Name: scheduled_run_trips_scheduled_run_trip_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.scheduled_run_trips_scheduled_run_trip_id_seq OWNED BY public.scheduled_run_trips.scheduled_run_trip_id;
+
+
+--
+-- TOC entry 245 (class 1259 OID 33185)
+-- Name: scheduled_runs; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.scheduled_runs (
+    run_id integer NOT NULL,
+    plan_id integer NOT NULL,
+    run_date date NOT NULL,
+    created_at timestamp without time zone DEFAULT now() NOT NULL
+);
+
+
+ALTER TABLE public.scheduled_runs OWNER TO postgres;
+
+--
+-- TOC entry 244 (class 1259 OID 33184)
+-- Name: scheduled_runs_run_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.scheduled_runs_run_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.scheduled_runs_run_id_seq OWNER TO postgres;
+
+--
+-- TOC entry 5181 (class 0 OID 0)
+-- Dependencies: 244
+-- Name: scheduled_runs_run_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.scheduled_runs_run_id_seq OWNED BY public.scheduled_runs.run_id;
 
 
 --
@@ -359,7 +527,7 @@ CREATE SEQUENCE public.trips_trip_id_seq
 ALTER SEQUENCE public.trips_trip_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5138 (class 0 OID 0)
+-- TOC entry 5182 (class 0 OID 0)
 -- Dependencies: 237
 -- Name: trips_trip_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -399,7 +567,7 @@ CREATE SEQUENCE public.units_unit_id_seq
 ALTER SEQUENCE public.units_unit_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5139 (class 0 OID 0)
+-- TOC entry 5183 (class 0 OID 0)
 -- Dependencies: 223
 -- Name: units_unit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -440,7 +608,7 @@ CREATE SEQUENCE public.vehicle_availability_availability_id_seq
 ALTER SEQUENCE public.vehicle_availability_availability_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5140 (class 0 OID 0)
+-- TOC entry 5184 (class 0 OID 0)
 -- Dependencies: 242
 -- Name: vehicle_availability_availability_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -482,7 +650,7 @@ CREATE SEQUENCE public.vehicle_types_vehicle_type_id_seq
 ALTER SEQUENCE public.vehicle_types_vehicle_type_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5141 (class 0 OID 0)
+-- TOC entry 5185 (class 0 OID 0)
 -- Dependencies: 219
 -- Name: vehicle_types_vehicle_type_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -525,7 +693,7 @@ CREATE SEQUENCE public.vehicles_vehicle_id_seq
 ALTER SEQUENCE public.vehicles_vehicle_id_seq OWNER TO postgres;
 
 --
--- TOC entry 5142 (class 0 OID 0)
+-- TOC entry 5186 (class 0 OID 0)
 -- Dependencies: 225
 -- Name: vehicles_vehicle_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -534,7 +702,7 @@ ALTER SEQUENCE public.vehicles_vehicle_id_seq OWNED BY public.vehicles.vehicle_i
 
 
 --
--- TOC entry 4919 (class 2604 OID 24677)
+-- TOC entry 4939 (class 2604 OID 24677)
 -- Name: crew_types crew_type_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -542,7 +710,7 @@ ALTER TABLE ONLY public.crew_types ALTER COLUMN crew_type_id SET DEFAULT nextval
 
 
 --
--- TOC entry 4925 (class 2604 OID 24919)
+-- TOC entry 4946 (class 2604 OID 24919)
 -- Name: individual_availability availability_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -550,7 +718,7 @@ ALTER TABLE ONLY public.individual_availability ALTER COLUMN availability_id SET
 
 
 --
--- TOC entry 4920 (class 2604 OID 24705)
+-- TOC entry 4940 (class 2604 OID 24705)
 -- Name: individuals individual_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -558,7 +726,7 @@ ALTER TABLE ONLY public.individuals ALTER COLUMN individual_id SET DEFAULT nextv
 
 
 --
--- TOC entry 4922 (class 2604 OID 24749)
+-- TOC entry 4942 (class 2604 OID 24749)
 -- Name: load_types load_type_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -566,7 +734,7 @@ ALTER TABLE ONLY public.load_types ALTER COLUMN load_type_id SET DEFAULT nextval
 
 
 --
--- TOC entry 4916 (class 2604 OID 24620)
+-- TOC entry 4935 (class 2604 OID 24620)
 -- Name: locations location_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -574,7 +742,7 @@ ALTER TABLE ONLY public.locations ALTER COLUMN location_id SET DEFAULT nextval('
 
 
 --
--- TOC entry 4923 (class 2604 OID 24834)
+-- TOC entry 4943 (class 2604 OID 24834)
 -- Name: plans plan_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -582,7 +750,7 @@ ALTER TABLE ONLY public.plans ALTER COLUMN plan_id SET DEFAULT nextval('public.p
 
 
 --
--- TOC entry 4921 (class 2604 OID 24727)
+-- TOC entry 4941 (class 2604 OID 24727)
 -- Name: routes route_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -590,7 +758,31 @@ ALTER TABLE ONLY public.routes ALTER COLUMN route_id SET DEFAULT nextval('public
 
 
 --
--- TOC entry 4924 (class 2604 OID 24846)
+-- TOC entry 4951 (class 2604 OID 57567)
+-- Name: scheduled_run_trip_rounds round_row_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trip_rounds ALTER COLUMN round_row_id SET DEFAULT nextval('public.scheduled_run_trip_rounds_round_row_id_seq'::regclass);
+
+
+--
+-- TOC entry 4950 (class 2604 OID 33206)
+-- Name: scheduled_run_trips scheduled_run_trip_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trips ALTER COLUMN scheduled_run_trip_id SET DEFAULT nextval('public.scheduled_run_trips_scheduled_run_trip_id_seq'::regclass);
+
+
+--
+-- TOC entry 4948 (class 2604 OID 33188)
+-- Name: scheduled_runs run_id; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_runs ALTER COLUMN run_id SET DEFAULT nextval('public.scheduled_runs_run_id_seq'::regclass);
+
+
+--
+-- TOC entry 4945 (class 2604 OID 24846)
 -- Name: trips trip_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -598,7 +790,7 @@ ALTER TABLE ONLY public.trips ALTER COLUMN trip_id SET DEFAULT nextval('public.t
 
 
 --
--- TOC entry 4917 (class 2604 OID 24631)
+-- TOC entry 4937 (class 2604 OID 24631)
 -- Name: units unit_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -606,7 +798,7 @@ ALTER TABLE ONLY public.units ALTER COLUMN unit_id SET DEFAULT nextval('public.u
 
 
 --
--- TOC entry 4926 (class 2604 OID 24940)
+-- TOC entry 4947 (class 2604 OID 24940)
 -- Name: vehicle_availability availability_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -614,7 +806,7 @@ ALTER TABLE ONLY public.vehicle_availability ALTER COLUMN availability_id SET DE
 
 
 --
--- TOC entry 4915 (class 2604 OID 24599)
+-- TOC entry 4934 (class 2604 OID 24599)
 -- Name: vehicle_types vehicle_type_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -622,7 +814,7 @@ ALTER TABLE ONLY public.vehicle_types ALTER COLUMN vehicle_type_id SET DEFAULT n
 
 
 --
--- TOC entry 4918 (class 2604 OID 24647)
+-- TOC entry 4938 (class 2604 OID 24647)
 -- Name: vehicles vehicle_id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
@@ -630,7 +822,7 @@ ALTER TABLE ONLY public.vehicles ALTER COLUMN vehicle_id SET DEFAULT nextval('pu
 
 
 --
--- TOC entry 4941 (class 2606 OID 24683)
+-- TOC entry 4966 (class 2606 OID 24683)
 -- Name: crew_types crew_types_crew_type_name_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -639,7 +831,7 @@ ALTER TABLE ONLY public.crew_types
 
 
 --
--- TOC entry 4943 (class 2606 OID 24681)
+-- TOC entry 4968 (class 2606 OID 24681)
 -- Name: crew_types crew_types_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -648,7 +840,7 @@ ALTER TABLE ONLY public.crew_types
 
 
 --
--- TOC entry 4959 (class 2606 OID 24922)
+-- TOC entry 4984 (class 2606 OID 24922)
 -- Name: individual_availability individual_availability_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -657,7 +849,7 @@ ALTER TABLE ONLY public.individual_availability
 
 
 --
--- TOC entry 4945 (class 2606 OID 24711)
+-- TOC entry 4970 (class 2606 OID 24711)
 -- Name: individuals individuals_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -666,7 +858,7 @@ ALTER TABLE ONLY public.individuals
 
 
 --
--- TOC entry 4949 (class 2606 OID 24755)
+-- TOC entry 4974 (class 2606 OID 24755)
 -- Name: load_types load_types_load_type_name_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -675,7 +867,7 @@ ALTER TABLE ONLY public.load_types
 
 
 --
--- TOC entry 4951 (class 2606 OID 24753)
+-- TOC entry 4976 (class 2606 OID 24753)
 -- Name: load_types load_types_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -684,7 +876,7 @@ ALTER TABLE ONLY public.load_types
 
 
 --
--- TOC entry 4933 (class 2606 OID 24626)
+-- TOC entry 4958 (class 2606 OID 24626)
 -- Name: locations locations_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -693,7 +885,7 @@ ALTER TABLE ONLY public.locations
 
 
 --
--- TOC entry 4953 (class 2606 OID 24841)
+-- TOC entry 4978 (class 2606 OID 24841)
 -- Name: plans plans_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -702,7 +894,7 @@ ALTER TABLE ONLY public.plans
 
 
 --
--- TOC entry 4947 (class 2606 OID 24734)
+-- TOC entry 4972 (class 2606 OID 24734)
 -- Name: routes routes_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -711,7 +903,34 @@ ALTER TABLE ONLY public.routes
 
 
 --
--- TOC entry 4957 (class 2606 OID 24891)
+-- TOC entry 4996 (class 2606 OID 57574)
+-- Name: scheduled_run_trip_rounds scheduled_run_trip_rounds_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trip_rounds
+    ADD CONSTRAINT scheduled_run_trip_rounds_pkey PRIMARY KEY (round_row_id);
+
+
+--
+-- TOC entry 4992 (class 2606 OID 33217)
+-- Name: scheduled_run_trips scheduled_run_trips_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trips
+    ADD CONSTRAINT scheduled_run_trips_pkey PRIMARY KEY (scheduled_run_trip_id);
+
+
+--
+-- TOC entry 4989 (class 2606 OID 33195)
+-- Name: scheduled_runs scheduled_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_runs
+    ADD CONSTRAINT scheduled_runs_pkey PRIMARY KEY (run_id);
+
+
+--
+-- TOC entry 4982 (class 2606 OID 24891)
 -- Name: trip_crew trip_crew_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -720,7 +939,7 @@ ALTER TABLE ONLY public.trip_crew
 
 
 --
--- TOC entry 4955 (class 2606 OID 24859)
+-- TOC entry 4980 (class 2606 OID 24859)
 -- Name: trips trips_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -729,7 +948,7 @@ ALTER TABLE ONLY public.trips
 
 
 --
--- TOC entry 4935 (class 2606 OID 24637)
+-- TOC entry 4960 (class 2606 OID 24637)
 -- Name: units units_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -738,7 +957,16 @@ ALTER TABLE ONLY public.units
 
 
 --
--- TOC entry 4961 (class 2606 OID 24943)
+-- TOC entry 4994 (class 2606 OID 33219)
+-- Name: scheduled_run_trips uq_run_trip; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trips
+    ADD CONSTRAINT uq_run_trip UNIQUE (run_id, trip_id);
+
+
+--
+-- TOC entry 4986 (class 2606 OID 24943)
 -- Name: vehicle_availability vehicle_availability_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -747,7 +975,7 @@ ALTER TABLE ONLY public.vehicle_availability
 
 
 --
--- TOC entry 4929 (class 2606 OID 24603)
+-- TOC entry 4954 (class 2606 OID 24603)
 -- Name: vehicle_types vehicle_types_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -756,7 +984,7 @@ ALTER TABLE ONLY public.vehicle_types
 
 
 --
--- TOC entry 4931 (class 2606 OID 24605)
+-- TOC entry 4956 (class 2606 OID 24605)
 -- Name: vehicle_types vehicle_types_type_name_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -765,7 +993,7 @@ ALTER TABLE ONLY public.vehicle_types
 
 
 --
--- TOC entry 4937 (class 2606 OID 24655)
+-- TOC entry 4962 (class 2606 OID 24655)
 -- Name: vehicles vehicles_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -774,7 +1002,7 @@ ALTER TABLE ONLY public.vehicles
 
 
 --
--- TOC entry 4939 (class 2606 OID 24657)
+-- TOC entry 4964 (class 2606 OID 24657)
 -- Name: vehicles vehicles_vehicle_number_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -783,7 +1011,23 @@ ALTER TABLE ONLY public.vehicles
 
 
 --
--- TOC entry 4977 (class 2606 OID 24923)
+-- TOC entry 4990 (class 1259 OID 33235)
+-- Name: idx_scheduled_run_trips_run_id; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_scheduled_run_trips_run_id ON public.scheduled_run_trips USING btree (run_id);
+
+
+--
+-- TOC entry 4987 (class 1259 OID 33201)
+-- Name: idx_scheduled_runs_plan_date; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_scheduled_runs_plan_date ON public.scheduled_runs USING btree (plan_id, run_date);
+
+
+--
+-- TOC entry 5012 (class 2606 OID 24923)
 -- Name: individual_availability individual_availability_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -792,7 +1036,7 @@ ALTER TABLE ONLY public.individual_availability
 
 
 --
--- TOC entry 4966 (class 2606 OID 24712)
+-- TOC entry 5001 (class 2606 OID 24712)
 -- Name: individuals individuals_crew_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -801,7 +1045,7 @@ ALTER TABLE ONLY public.individuals
 
 
 --
--- TOC entry 4967 (class 2606 OID 24717)
+-- TOC entry 5002 (class 2606 OID 24717)
 -- Name: individuals individuals_current_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -810,7 +1054,7 @@ ALTER TABLE ONLY public.individuals
 
 
 --
--- TOC entry 4968 (class 2606 OID 24740)
+-- TOC entry 5003 (class 2606 OID 24740)
 -- Name: routes routes_end_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -819,7 +1063,7 @@ ALTER TABLE ONLY public.routes
 
 
 --
--- TOC entry 4969 (class 2606 OID 24735)
+-- TOC entry 5004 (class 2606 OID 24735)
 -- Name: routes routes_start_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -828,7 +1072,61 @@ ALTER TABLE ONLY public.routes
 
 
 --
--- TOC entry 4975 (class 2606 OID 24897)
+-- TOC entry 5018 (class 2606 OID 57575)
+-- Name: scheduled_run_trip_rounds scheduled_run_trip_rounds_scheduled_run_trip_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trip_rounds
+    ADD CONSTRAINT scheduled_run_trip_rounds_scheduled_run_trip_id_fkey FOREIGN KEY (scheduled_run_trip_id) REFERENCES public.scheduled_run_trips(scheduled_run_trip_id) ON DELETE CASCADE;
+
+
+--
+-- TOC entry 5019 (class 2606 OID 57580)
+-- Name: scheduled_run_trip_rounds scheduled_run_trip_rounds_vehicle_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trip_rounds
+    ADD CONSTRAINT scheduled_run_trip_rounds_vehicle_number_fkey FOREIGN KEY (vehicle_number) REFERENCES public.vehicles(vehicle_number);
+
+
+--
+-- TOC entry 5015 (class 2606 OID 33220)
+-- Name: scheduled_run_trips scheduled_run_trips_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trips
+    ADD CONSTRAINT scheduled_run_trips_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.scheduled_runs(run_id) ON DELETE CASCADE;
+
+
+--
+-- TOC entry 5016 (class 2606 OID 33225)
+-- Name: scheduled_run_trips scheduled_run_trips_trip_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trips
+    ADD CONSTRAINT scheduled_run_trips_trip_id_fkey FOREIGN KEY (trip_id) REFERENCES public.trips(trip_id);
+
+
+--
+-- TOC entry 5017 (class 2606 OID 33230)
+-- Name: scheduled_run_trips scheduled_run_trips_vehicle_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_run_trips
+    ADD CONSTRAINT scheduled_run_trips_vehicle_number_fkey FOREIGN KEY (vehicle_number) REFERENCES public.vehicles(vehicle_number);
+
+
+--
+-- TOC entry 5014 (class 2606 OID 33196)
+-- Name: scheduled_runs scheduled_runs_plan_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.scheduled_runs
+    ADD CONSTRAINT scheduled_runs_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(plan_id);
+
+
+--
+-- TOC entry 5010 (class 2606 OID 24897)
 -- Name: trip_crew trip_crew_individual_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -837,7 +1135,7 @@ ALTER TABLE ONLY public.trip_crew
 
 
 --
--- TOC entry 4976 (class 2606 OID 24892)
+-- TOC entry 5011 (class 2606 OID 24892)
 -- Name: trip_crew trip_crew_trip_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -846,7 +1144,7 @@ ALTER TABLE ONLY public.trip_crew
 
 
 --
--- TOC entry 4970 (class 2606 OID 24875)
+-- TOC entry 5005 (class 2606 OID 24875)
 -- Name: trips trips_load_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -855,7 +1153,7 @@ ALTER TABLE ONLY public.trips
 
 
 --
--- TOC entry 4971 (class 2606 OID 24860)
+-- TOC entry 5006 (class 2606 OID 24860)
 -- Name: trips trips_plan_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -864,7 +1162,7 @@ ALTER TABLE ONLY public.trips
 
 
 --
--- TOC entry 4972 (class 2606 OID 24870)
+-- TOC entry 5007 (class 2606 OID 24870)
 -- Name: trips trips_route_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -873,7 +1171,7 @@ ALTER TABLE ONLY public.trips
 
 
 --
--- TOC entry 4973 (class 2606 OID 24880)
+-- TOC entry 5008 (class 2606 OID 24880)
 -- Name: trips trips_unit_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -882,7 +1180,7 @@ ALTER TABLE ONLY public.trips
 
 
 --
--- TOC entry 4974 (class 2606 OID 24865)
+-- TOC entry 5009 (class 2606 OID 24865)
 -- Name: trips trips_vehicle_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -891,7 +1189,7 @@ ALTER TABLE ONLY public.trips
 
 
 --
--- TOC entry 4962 (class 2606 OID 24638)
+-- TOC entry 4997 (class 2606 OID 24638)
 -- Name: units units_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -900,7 +1198,7 @@ ALTER TABLE ONLY public.units
 
 
 --
--- TOC entry 4978 (class 2606 OID 24944)
+-- TOC entry 5013 (class 2606 OID 24944)
 -- Name: vehicle_availability vehicle_availability_vehicle_number_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -909,7 +1207,7 @@ ALTER TABLE ONLY public.vehicle_availability
 
 
 --
--- TOC entry 4963 (class 2606 OID 24663)
+-- TOC entry 4998 (class 2606 OID 24663)
 -- Name: vehicles vehicles_current_location_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -918,7 +1216,7 @@ ALTER TABLE ONLY public.vehicles
 
 
 --
--- TOC entry 4964 (class 2606 OID 24668)
+-- TOC entry 4999 (class 2606 OID 24668)
 -- Name: vehicles vehicles_unit_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -927,7 +1225,7 @@ ALTER TABLE ONLY public.vehicles
 
 
 --
--- TOC entry 4965 (class 2606 OID 24658)
+-- TOC entry 5000 (class 2606 OID 24658)
 -- Name: vehicles vehicles_vehicle_type_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -935,32 +1233,11 @@ ALTER TABLE ONLY public.vehicles
     ADD CONSTRAINT vehicles_vehicle_type_id_fkey FOREIGN KEY (vehicle_type_id) REFERENCES public.vehicle_types(vehicle_type_id);
 
 
--- Completed on 2026-06-09 12:38:56
+-- Completed on 2026-07-13 14:41:26
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Wz70pCGj53rmfCDQqRmPTnmUZuYceaRIEvDTAjgXkHviFXuYcejmc4axwy8kSbS
+\unrestrict DpsZIc5aRDdKa1Se00SJWvBQJsupl2XwDqFhgyznTuj3wij0pUa0eUC2PTyGOhE
 
-ALTER TABLE public.locations
-ADD COLUMN has_fuel_station boolean DEFAULT false;
-
-CREATE TYPE public.plan_priority AS ENUM ('low', 'medium', 'high');
-
-ALTER TABLE public.plans
-ADD COLUMN priority public.plan_priority NOT NULL DEFAULT 'medium';
-
-CREATE OR REPLACE FUNCTION cleanup_expired_availability()
-
-RETURNS VOID LANGUAGE plpgsql AS $$
-
-BEGIN
-
-  DELETE FROM vehicle_availability WHERE not_available_to <= NOW();
-
-  DELETE FROM individual_availability WHERE not_available_to <= NOW();
-
-END;
-
-$$;
