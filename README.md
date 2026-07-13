@@ -386,7 +386,8 @@ military_planner
 Execute the SQL file:
 
 ```
-db/test.sql
+db/schema.sql
+db/data.sql
 ```
 
 to create and populate all required tables.
